@@ -494,7 +494,9 @@ class ProcessingPipeline:
 
             # Limit articles per topic and sort by publication date
             topic_articles = sorted(
-                topic_articles, key=lambda a: a.published_at, reverse=True
+                topic_articles, 
+                key=lambda a: a.published_at or datetime.min.replace(tzinfo=timezone.utc), 
+                reverse=True
             )[:max_per_topic]
 
             # Process articles with smart routing
