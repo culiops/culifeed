@@ -441,6 +441,11 @@ class OpenAIProvider(AIProvider):
             # Restore original model
             self.model_name = original_model
 
+    async def complete(self, prompt: str) -> str:
+        """Raw single-prompt completion. Returns the model's text output."""
+        response = await self._make_chat_completion(prompt)
+        return response.choices[0].message.content
+
     async def _make_chat_completion(self, prompt: str, max_tokens: int = 500) -> any:
         """Make chat completion request to OpenAI.
 

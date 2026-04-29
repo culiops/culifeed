@@ -334,6 +334,50 @@ class AIManager:
             success=False, relevance_score=0.0, confidence=0.0, error_message=error_msg
         )
 
+    async def complete(self, prompt: str) -> AIResult:
+        """Provider-agnostic raw completion. Used by v2 LLMGate.
+
+        Tries providers in priority order with the existing fallback chain.
+        Returns AIResult where `content` holds the model's text output.
+        """
+        start_time = time.time()
+        last_error: Optional[str] = None
+
+        for provider_type, model_name in self._get_provider_model_combinations():
+            provider = self.providers.get(provider_type)
+            health = self.provider_health.get(provider_type)
+
+            if not provider or not health or not health.is_healthy:
+                continue
+
+            try:
+                text = await provider.complete(prompt)
+                return AIResult(
+                    success=True,
+                    relevance_score=0.0,
+                    confidence=0.0,
+                    content=text,
+                    provider=provider_type.value,
+                    model_used=model_name,
+                    processing_time_ms=int((time.time() - start_time) * 1000),
+                )
+            except NotImplementedError:
+                continue
+            except Exception as e:
+                last_error = f"{provider_type.value}: {e}"
+                self.logger.warning(
+                    f"Provider {provider_type.value} complete() failed: {e}"
+                )
+                continue
+
+        return AIResult(
+            success=False,
+            relevance_score=0.0,
+            confidence=0.0,
+            error_message=last_error or "All providers exhausted",
+            processing_time_ms=int((time.time() - start_time) * 1000),
+        )
+
     def _apply_provider_quality_adjustments(
         self, result: AIResult, provider_type: Union[AIProviderType, str]
     ) -> AIResult:
