@@ -209,6 +209,37 @@ class FilteringSettings(BaseModel):
         description="Weight of URL quality in overall article quality score",
     )
 
+    # Embedding pipeline (v2)
+    embedding_provider: str = Field(
+        default="openai",
+        description="Provider for article and topic embeddings",
+    )
+    embedding_model: str = Field(
+        default="text-embedding-3-small",
+        description="Embedding model name",
+    )
+    embedding_min_score: float = Field(
+        default=0.45,
+        ge=0.0,
+        le=1.0,
+        description="Minimum cosine similarity for embedding stage to assign a topic",
+    )
+    embedding_fallback_threshold: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        description="Threshold for delivering on embedding score alone if LLM gate fails",
+    )
+    embedding_retention_days: int = Field(
+        default=90,
+        ge=1,
+        description="Days to retain article embeddings before pruning",
+    )
+    use_embedding_pipeline: bool = Field(
+        default=False,
+        description="Feature flag: use the v2 embedding pipeline",
+    )
+
 
 class SmartProcessingSettings(BaseModel):
     """Smart processing configuration for confidence-based routing."""

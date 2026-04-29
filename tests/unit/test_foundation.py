@@ -529,5 +529,17 @@ def tmp_path():
         yield Path(tmpdir)
 
 
+def test_embedding_settings_defaults():
+    from culifeed.config.settings import get_settings
+    s = get_settings()
+    assert s.filtering.embedding_provider == "openai"
+    assert s.filtering.embedding_model == "text-embedding-3-small"
+    assert 0.0 <= s.filtering.embedding_min_score <= 1.0
+    assert s.filtering.embedding_min_score == 0.45
+    assert s.filtering.embedding_fallback_threshold == 0.65
+    assert s.filtering.embedding_retention_days == 90
+    assert s.filtering.use_embedding_pipeline is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
