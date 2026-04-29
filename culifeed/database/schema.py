@@ -306,8 +306,13 @@ class DatabaseSchema:
     def drop_tables(self) -> None:
         """Drop all tables (for testing/reset purposes)."""
         with sqlite3.connect(self.db_path) as conn:
-            # Drop in reverse dependency order
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            # Drop in reverse dependency order; virtual tables first
             tables = [
+                "topic_embeddings",
+                "article_embeddings",
                 "processing_results",
                 "feeds",
                 "topics",
@@ -350,6 +355,8 @@ class DatabaseSchema:
                     "processing_results",
                     "topics",
                     "user_subscriptions",
+                    "topic_embeddings",
+                    "article_embeddings",
                 }
 
                 if set(tables) != expected_tables:
