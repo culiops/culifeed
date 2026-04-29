@@ -67,15 +67,19 @@ class TestDatabaseSchema:
             )
             tables = [row[0] for row in cursor.fetchall()]
 
-        expected_tables = [
+        expected_tables = {
             "articles",
             "channels",
             "feeds",
             "processing_results",
             "topics",
             "user_subscriptions",  # Added for SaaS pricing feature
-        ]
-        assert set(tables) == set(expected_tables)
+            "topic_embeddings",  # sqlite-vec virtual table for v2 pipeline
+            "article_embeddings",  # sqlite-vec virtual table for v2 pipeline
+        }
+        # sqlite-vec creates aux shadow tables (e.g. *_chunks, *_rowids); the
+        # expected core tables must be a subset of what's present.
+        assert expected_tables.issubset(set(tables))
 
     def test_verify_schema(self, tmp_path):
         """Test schema verification."""

@@ -359,9 +359,10 @@ class DatabaseSchema:
                     "article_embeddings",
                 }
 
-                if set(tables) != expected_tables:
+                if not expected_tables.issubset(set(tables)):
+                    missing = expected_tables - set(tables)
                     logger.error(
-                        f"Missing tables. Expected: {expected_tables}, Found: {set(tables)}"
+                        f"Missing tables. Expected (subset): {expected_tables}, Missing: {missing}, Found: {set(tables)}"
                     )
                     return False
 
