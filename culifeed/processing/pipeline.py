@@ -478,14 +478,19 @@ class ProcessingPipeline:
             topic_name = topic.name
             self.logger.debug(f"Processing AI analysis for topic: {topic_name}")
 
-            # Get articles that passed pre-filtering for this topic
+            # Get articles that passed pre-filtering for this topic,
+            # keeping the per-topic pre-filter score alongside each article.
             topic_articles = []
+            article_pre_filter_scores: Dict[str, float] = {}
             for article, filter_result in zip(articles, filter_results):
                 if (
                     filter_result.passed_filter
                     and topic_name in filter_result.matched_topics
                 ):
                     topic_articles.append(article)
+                    article_pre_filter_scores[article.id] = (
+                        filter_result.relevance_scores.get(topic_name, 0.0)
+                    )
             if not topic_articles:
                 self.logger.debug(
                     f"No articles passed pre-filtering for topic '{topic_name}'"
@@ -555,6 +560,7 @@ class ProcessingPipeline:
                                     "article_id": article.id,
                                     "chat_id": topic.chat_id,
                                     "topic_name": topic_name,
+                                    "pre_filter_score": article_pre_filter_scores.get(article.id),
                                     "ai_relevance_score": smart_result.relevance_score,
                                     "confidence_score": smart_result.confidence_level,
                                     "summary": summary,
@@ -647,6 +653,7 @@ class ProcessingPipeline:
                                 "article_id": article.id,
                                 "chat_id": topic.chat_id,
                                 "topic_name": topic_name,
+                                "pre_filter_score": article_pre_filter_scores.get(article.id),
                                 "ai_relevance_score": ai_result.relevance_score,
                                 "confidence_score": ai_result.confidence,
                                 "summary": article.summary,
@@ -700,6 +707,7 @@ class ProcessingPipeline:
                                         "article_id": article.id,
                                         "chat_id": topic.chat_id,
                                         "topic_name": topic_name,
+                                        "pre_filter_score": article_pre_filter_scores.get(article.id),
                                         "ai_relevance_score": hybrid_result.relevance_score,
                                         "confidence_score": article.ai_confidence,
                                         "summary": None,
@@ -957,10 +965,12 @@ class ProcessingPipeline:
                 conn.execute(
                     """
                     INSERT INTO processing_results
-                    (article_id, chat_id, topic_name, ai_relevance_score, confidence_score,
+                    (article_id, chat_id, topic_name, pre_filter_score,
+                     ai_relevance_score, confidence_score,
                      summary, processed_at, delivered)
-                    VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 0)
-                    ON CONFLICT(article_id, chat_id, topic_name) DO UPDATE SET
+                    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 0)
+                    ON CONFLICT(article_id, chat_id, topic_name, pipeline_version) DO UPDATE SET
+                        pre_filter_score = excluded.pre_filter_score,
                         ai_relevance_score = excluded.ai_relevance_score,
                         confidence_score = excluded.confidence_score,
                         summary = excluded.summary,
@@ -971,6 +981,7 @@ class ProcessingPipeline:
                         result["article_id"],
                         result["chat_id"],
                         result["topic_name"],
+                        result.get("pre_filter_score"),
                         result["ai_relevance_score"],
                         result["confidence_score"],
                         result.get("summary"),

@@ -1120,3 +1120,58 @@ class TestProcessingPipeline:
             ).fetchone()
             assert row is not None
             assert row["title"] == "Test Article"
+
+    def test_store_processing_results_persists_pre_filter_score(
+        self, test_database, db_connection, sample_articles
+    ):
+        """Regression test: pre_filter_score must not be NULL after _store_processing_results.
+
+        The v1 pipeline computes a relevance score in the pre-filter stage but the
+        _store_processing_results INSERT was missing the column, leaving every row NULL.
+        """
+        pipeline = ProcessingPipeline(db_connection)
+
+        # Insert the article so the foreign-key relationship holds.
+        pipeline._store_articles_for_processing([sample_articles[0]])
+
+        # Insert the channel so FK on processing_results is satisfied.
+        with db_connection.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO channels (chat_id, chat_title, chat_type, created_at)
+                VALUES ('test_channel', 'Test Channel', 'group', ?)
+                """,
+                (datetime.now(timezone.utc),),
+            )
+            conn.commit()
+
+        expected_score = 0.75
+
+        processing_results = [
+            {
+                "article_id": sample_articles[0].id,
+                "chat_id": "test_channel",
+                "topic_name": "AI Technology",
+                "ai_relevance_score": 0.9,
+                "confidence_score": 0.8,
+                "summary": None,
+                "pre_filter_score": expected_score,
+            }
+        ]
+
+        pipeline._store_processing_results(processing_results)
+
+        with db_connection.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT pre_filter_score FROM processing_results
+                WHERE article_id = ? AND chat_id = ? AND topic_name = ?
+                """,
+                (sample_articles[0].id, "test_channel", "AI Technology"),
+            ).fetchone()
+
+        assert row is not None, "No row inserted into processing_results"
+        assert row["pre_filter_score"] is not None, (
+            "pre_filter_score is NULL — the INSERT is not persisting the value"
+        )
+        assert abs(row["pre_filter_score"] - expected_score) < 1e-9
