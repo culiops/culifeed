@@ -492,3 +492,54 @@ def test_topics_migration_idempotent(tmp_path):
     schema = DatabaseSchema(str(tmp_path / "t.db"))
     schema.create_tables()
     schema.create_tables()  # second run must not raise
+
+
+def test_vector_tables_created(tmp_path):
+    from culifeed.database.schema import DatabaseSchema
+    schema = DatabaseSchema(str(tmp_path / "t.db"))
+    schema.create_tables()
+    import sqlite3, sqlite_vec
+    conn = sqlite3.connect(str(tmp_path / "t.db"))
+    conn.enable_load_extension(True); sqlite_vec.load(conn)
+    tables = {row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type IN ('table','view')").fetchall()}
+    assert "topic_embeddings" in tables
+    assert "article_embeddings" in tables
+
+
+def test_processing_results_v2_columns(tmp_path):
+    from culifeed.database.schema import DatabaseSchema
+    schema = DatabaseSchema(str(tmp_path / "t.db"))
+    schema.create_tables()
+    import sqlite3
+    conn = sqlite3.connect(str(tmp_path / "t.db"))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(processing_results)").fetchall()}
+    for c in ("embedding_score", "embedding_top_topics", "llm_decision",
+              "llm_reasoning", "pipeline_version"):
+        assert c in cols, f"missing {c}"
+
+
+def test_migration_against_prod_snapshot(tmp_path):
+    """Regression: applying schema to existing prod-shape DB must not lose rows."""
+    import shutil, os, pytest, sqlite3
+    src = "/tmp/culifeed_snapshot.db"
+    if not os.path.exists(src):
+        pytest.skip("snapshot not present")
+    dst = str(tmp_path / "snap.db")
+    shutil.copy(src, dst)
+    pre_count = sqlite3.connect(dst).execute(
+        "SELECT COUNT(*) FROM processing_results").fetchone()[0]
+
+    from culifeed.database.schema import DatabaseSchema
+    DatabaseSchema(dst).create_tables()  # idempotent migration
+
+    post_count = sqlite3.connect(dst).execute(
+        "SELECT COUNT(*) FROM processing_results").fetchone()[0]
+    assert post_count == pre_count, f"row loss: {pre_count} → {post_count}"
+    cols = {row[1] for row in sqlite3.connect(dst).execute(
+        "PRAGMA table_info(processing_results)").fetchall()}
+    assert "pipeline_version" in cols
+    # Existing rows should default to 'v1'
+    versions = sqlite3.connect(dst).execute(
+        "SELECT DISTINCT pipeline_version FROM processing_results").fetchall()
+    assert ("v1",) in versions or all(v[0] == "v1" for v in versions)
