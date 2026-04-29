@@ -5,9 +5,6 @@ Database Connection Tests
 Tests for DatabaseConnection class, including sqlite-vec extension loading.
 """
 
-import pytest
-from pathlib import Path
-
 from culifeed.database.connection import DatabaseConnection
 
 
