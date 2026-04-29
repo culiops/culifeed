@@ -232,13 +232,13 @@ For the existing 13 topics: a one-time migration script generates descriptions i
 
 | Failure | Behavior | Error code |
 |---|---|---|
-| Embedding API 5xx / timeout | Retry w/ backoff (3 attempts). Skip stage for run; mark articles for retry. **Do not deliver.** | `A005` AI_EMBEDDING_ERROR (new) |
+| Embedding API 5xx / timeout | Retry w/ backoff (3 attempts). Skip stage for run; mark articles for retry. **Do not deliver.** | `A011` AI_EMBEDDING_ERROR (new) |
 | Embedding API 429 | Honor `Retry-After`; queue remainder for next tick | `A002` (existing) |
-| `sqlite-vec` extension fails to load | Hard fail at startup with clear error | `D009` VECTOR_STORE_UNAVAILABLE (new) |
-| Topic embedding stale, recompute fails | Skip that topic for this run; other topics unaffected | `A005` |
+| `sqlite-vec` extension fails to load | Hard fail at startup with clear error | `D007` VECTOR_STORE_UNAVAILABLE (new) |
+| Topic embedding stale, recompute fails | Skip that topic for this run; other topics unaffected | `A011` |
 | LLM gate fails for an article | Fall back to embedding-only delivery if `embedding_score ≥ embedding_fallback_threshold`. Mark `llm_decision='skipped'`. | `A001` (existing) |
 | Topic deleted mid-run | Skip results for that topic_id at persist | — |
-| Article body empty/null | Use title only; if also empty, drop with `pre_filter_reason='empty content'` | `F004` CONTENT_EMPTY (new) |
+| Article body empty/null | Use title only; if also empty, drop with `pre_filter_reason='empty content'` | `P005` CONTENT_EMPTY (new) |
 
 A single failure (one article, one topic, one API call) never aborts the channel run.
 
