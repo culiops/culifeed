@@ -177,3 +177,108 @@ async def test_v2_one_article_failure_does_not_abort_run(tmp_path):
     # Third should be skipped with the crash reason in reasoning
     assert decisions["a3"][0] == "skipped"
     assert "provider crash" in decisions["a3"][1]
+
+
+# ---------------------------------------------------------------------------
+# D3: Article embedding pruning
+# ---------------------------------------------------------------------------
+
+def test_prune_articles_older_than_removes_old_rows(tmp_path):
+    """VectorStore.prune_articles_older_than deletes stale embeddings and
+    returns the count of removed rows, leaving fresh embeddings intact."""
+    import struct
+
+    db = _make_db(tmp_path)
+
+    # Seed two articles directly — no channel/topic needed for this unit test.
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO articles(id, title, url, content, source_feed, content_hash) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            ("old-art", "Old", "http://a/old", "old content", "http://f/", "hash-old"),
+        )
+        conn.execute(
+            "INSERT INTO articles(id, title, url, content, source_feed, content_hash) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            ("new-art", "New", "http://a/new", "new content", "http://f/", "hash-new"),
+        )
+        # Back-date the old article so it falls outside the 30-day window.
+        conn.execute(
+            "UPDATE articles SET created_at = datetime('now', '-60 days') "
+            "WHERE id = 'old-art'"
+        )
+        conn.commit()
+
+    from culifeed.storage.vector_store import VectorStore
+
+    vs = VectorStore(db)
+    dummy_vec = [0.1] * 1536
+    vs.upsert_article_embedding("old-art", dummy_vec)
+    vs.upsert_article_embedding("new-art", dummy_vec)
+
+    # Verify both embeddings exist before pruning.
+    with db.get_connection() as conn:
+        count_before = conn.execute(
+            "SELECT COUNT(*) FROM article_embeddings"
+        ).fetchone()[0]
+    assert count_before == 2
+
+    pruned = vs.prune_articles_older_than(30)
+
+    assert pruned == 1, f"Expected 1 pruned row, got {pruned}"
+
+    with db.get_connection() as conn:
+        remaining = [
+            r[0]
+            for r in conn.execute("SELECT article_id FROM article_embeddings").fetchall()
+        ]
+    assert "old-art" not in remaining
+    assert "new-art" in remaining
+
+
+@pytest.mark.asyncio
+async def test_v2_pipeline_calls_prune_after_persist(tmp_path):
+    """_process_channel_v2 must call VectorStore.prune_articles_older_than
+    after persisting results, using settings.filtering.embedding_retention_days."""
+    from unittest.mock import patch, MagicMock as MM
+
+    db = _make_db(tmp_path)
+    _seed_channel_topic_feed(db)
+    _seed_article(db, article_id="a1", title="AWS Lambda news",
+                  content="aws lambda serverless content")
+
+    settings = _build_settings()
+    settings.filtering.embedding_retention_days = 42
+
+    embeddings = AsyncMock()
+    embeddings.embed = AsyncMock(return_value=[0.1] * 1536)
+    embeddings.embed_batch = AsyncMock(return_value=[[0.1] * 1536])
+
+    ai_manager = MagicMock()
+    ai_manager.complete = AsyncMock(return_value=MagicMock(
+        success=True,
+        content="DECISION: PASS\nCONFIDENCE: 0.9\nREASONING: ok",
+    ))
+
+    pipeline = ProcessingPipeline(
+        db, settings=settings,
+        ai_manager=ai_manager,
+        embedding_service=embeddings,
+    )
+
+    prune_calls = []
+
+    original_prune = pipeline._vector_store.prune_articles_older_than
+
+    def recording_prune(days):
+        prune_calls.append(days)
+        return original_prune(days)
+
+    pipeline._vector_store.prune_articles_older_than = recording_prune
+
+    await pipeline._process_channel_v2("c")
+
+    assert prune_calls, "_process_channel_v2 never called prune_articles_older_than"
+    assert prune_calls[-1] == 42, (
+        f"Expected prune called with retention_days=42, got {prune_calls[-1]}"
+    )

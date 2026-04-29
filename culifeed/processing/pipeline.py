@@ -1139,6 +1139,13 @@ class ProcessingPipeline:
                 gate_error=gate_error,
             )
 
+        # Stage 5: prune stale article embeddings beyond the retention window.
+        pruned = self._vector_store.prune_articles_older_than(
+            self.settings.filtering.embedding_retention_days
+        )
+        if pruned:
+            self.logger.info(f"Pruned {pruned} stale article embedding(s)")
+
     def _persist_topic_signatures(self, topics: List[Topic]) -> None:
         """Write back any embedding_signature updates from TopicMatcher."""
         with self.db.get_connection() as conn:
