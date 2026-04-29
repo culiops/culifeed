@@ -76,6 +76,79 @@ def test_rank_returns_empty_when_no_active_topics(db):
     assert vs.rank_topics_for_article("a", []) == []
 
 
+def test_delete_topic_embedding_removes_row(db):
+    vs = VectorStore(db)
+    vs.upsert_topic_embedding(42, _vec(0.5))
+    # Confirm present
+    with db.get_connection() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM topic_embeddings WHERE topic_id = ?", (42,)
+        ).fetchone()[0]
+        assert n == 1
+    vs.delete_topic_embedding(42)
+    with db.get_connection() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM topic_embeddings WHERE topic_id = ?", (42,)
+        ).fetchone()[0]
+        assert n == 0
+
+
+def test_delete_topic_embedding_noop_when_missing(db):
+    vs = VectorStore(db)
+    # Should not raise even if there's nothing to delete
+    vs.delete_topic_embedding(999)
+
+
+def test_rank_topics_skips_null_distance(monkeypatch, db):
+    """If sqlite-vec returns NULL for distance, the row must be skipped, not crash."""
+    vs = VectorStore(db)
+    vs.upsert_topic_embedding(1, _vec_unit(hot_index=0))
+    vs.upsert_topic_embedding(2, _vec_unit(hot_index=1))
+    vs.upsert_article_embedding("a", _vec_unit(hot_index=0))
+
+    # Patch DatabaseConnection.get_connection so the cursor returned by
+    # rank_topics_for_article yields a NULL distance for one of the rows.
+    real_get_conn = db.get_connection
+
+    class _CursorWrap:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def fetchall(self):
+            rows = self._inner.fetchall()
+            # Inject a None-distance row to simulate sqlite-vec edge case
+            return [(99, None)] + list(rows)
+
+    class _ConnWrap:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *a, **kw):
+            cur = self._inner.execute(sql, *a, **kw)
+            if "vec_distance_cosine" in sql:
+                return _CursorWrap(cur)
+            return cur
+
+        def commit(self):
+            return self._inner.commit()
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_get_conn():
+        with real_get_conn() as conn:
+            yield _ConnWrap(conn)
+
+    monkeypatch.setattr(db, "get_connection", fake_get_conn)
+    ranked = vs.rank_topics_for_article("a", [1, 2], top_k=5)
+    # NULL row (id 99) must be filtered out; remaining rows still parse cleanly
+    assert all(tid != 99 for tid, _ in ranked)
+    assert len(ranked) == 2
+
+
 def test_prune_articles_older_than(db):
     vs = VectorStore(db)
     vs.upsert_article_embedding("old", _vec(0.1))

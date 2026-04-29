@@ -69,7 +69,29 @@ class VectorStore:
                 """,
                 (article_vec, *active_topic_ids, top_k),
             )
-            return [(int(tid), 1.0 - float(dist)) for tid, dist in cur.fetchall()]
+            results: List[Tuple[int, float]] = []
+            for tid, dist in cur.fetchall():
+                # sqlite-vec can return NULL for vec_distance_cosine in
+                # degenerate cases (e.g. zero-vector inputs). Skip rather
+                # than crash on float(None).
+                if dist is None:
+                    continue
+                results.append((int(tid), 1.0 - float(dist)))
+            return results
+
+    def delete_topic_embedding(self, topic_id: int) -> None:
+        """Remove a topic's stored embedding row.
+
+        Safe to call when no embedding exists (no-op). Used by topic
+        deletion paths to keep ``topic_embeddings`` from accumulating
+        orphan rows after a topic is removed.
+        """
+        with self._db.get_connection() as conn:
+            conn.execute(
+                "DELETE FROM topic_embeddings WHERE topic_id = ?",
+                (topic_id,),
+            )
+            conn.commit()
 
     def prune_articles_older_than(self, days: int) -> int:
         """Delete embeddings for articles whose `articles.created_at` is older than `days`."""
