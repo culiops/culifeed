@@ -473,3 +473,22 @@ class TestProcessingStats:
             delivered_articles=0,
         )
         assert no_ai_stats.delivery_success_rate == 0.0
+
+
+def test_topics_table_has_description_columns(tmp_path):
+    from culifeed.database.schema import DatabaseSchema
+    schema = DatabaseSchema(str(tmp_path / "t.db"))
+    schema.create_tables()
+    import sqlite3
+    conn = sqlite3.connect(str(tmp_path / "t.db"))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(topics)").fetchall()}
+    assert "description" in cols
+    assert "embedding_signature" in cols
+    assert "embedding_updated_at" in cols
+
+
+def test_topics_migration_idempotent(tmp_path):
+    from culifeed.database.schema import DatabaseSchema
+    schema = DatabaseSchema(str(tmp_path / "t.db"))
+    schema.create_tables()
+    schema.create_tables()  # second run must not raise

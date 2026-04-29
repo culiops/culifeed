@@ -120,6 +120,9 @@ class DatabaseSchema:
                 last_match_at TIMESTAMP,
                 active BOOLEAN DEFAULT TRUE,
                 telegram_user_id INTEGER,  -- NEW: User ownership for SaaS pricing
+                description TEXT,
+                embedding_signature TEXT,
+                embedding_updated_at TIMESTAMP,
                 FOREIGN KEY (chat_id) REFERENCES channels(chat_id) ON DELETE CASCADE,
                 FOREIGN KEY (telegram_user_id) REFERENCES user_subscriptions(telegram_user_id) ON DELETE SET NULL,
                 UNIQUE(chat_id, name)
@@ -216,6 +219,19 @@ class DatabaseSchema:
             logger.info("Adding telegram_user_id column to topics table")
             conn.execute("ALTER TABLE topics ADD COLUMN telegram_user_id INTEGER")
             # Note: Foreign key constraint will be added in next migration if needed
+
+        # Migration 2: Add description + embedding metadata to topics (v2 pipeline)
+        cursor = conn.execute("PRAGMA table_info(topics)")
+        topic_columns = [column[1] for column in cursor.fetchall()]
+        if "description" not in topic_columns:
+            logger.info("Adding description column to topics table")
+            conn.execute("ALTER TABLE topics ADD COLUMN description TEXT")
+        if "embedding_signature" not in topic_columns:
+            logger.info("Adding embedding_signature column to topics table")
+            conn.execute("ALTER TABLE topics ADD COLUMN embedding_signature TEXT")
+        if "embedding_updated_at" not in topic_columns:
+            logger.info("Adding embedding_updated_at column to topics table")
+            conn.execute("ALTER TABLE topics ADD COLUMN embedding_updated_at TIMESTAMP")
 
     def drop_tables(self) -> None:
         """Drop all tables (for testing/reset purposes)."""
