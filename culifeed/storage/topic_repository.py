@@ -483,6 +483,57 @@ class TopicRepository:
             self.logger.error(f"Failed to get topic statistics: {e}")
             return {}
 
+    def update_description(self, topic_id: int, description: str) -> None:
+        """Update topic description.
+
+        Args:
+            topic_id: Topic ID to update
+            description: New description text
+
+        Raises:
+            DatabaseError: If update fails
+        """
+        try:
+            with self.db.get_connection() as conn:
+                conn.execute(
+                    "UPDATE topics SET description = ? WHERE id = ?",
+                    (description, topic_id),
+                )
+                conn.commit()
+
+            self.logger.debug(f"Updated description for topic {topic_id}")
+
+        except Exception as e:
+            raise DatabaseError(
+                f"Failed to update description for topic {topic_id}: {e}",
+                error_code=ErrorCode.DATABASE_ERROR,
+            ) from e
+
+    def clear_embedding_signature(self, topic_id: int) -> None:
+        """Clear embedding signature so the topic is re-embedded on next pipeline run.
+
+        Args:
+            topic_id: Topic ID to clear embedding signature for
+
+        Raises:
+            DatabaseError: If update fails
+        """
+        try:
+            with self.db.get_connection() as conn:
+                conn.execute(
+                    "UPDATE topics SET embedding_signature = NULL, embedding_updated_at = NULL WHERE id = ?",
+                    (topic_id,),
+                )
+                conn.commit()
+
+            self.logger.debug(f"Cleared embedding signature for topic {topic_id}")
+
+        except Exception as e:
+            raise DatabaseError(
+                f"Failed to clear embedding signature for topic {topic_id}: {e}",
+                error_code=ErrorCode.DATABASE_ERROR,
+            ) from e
+
     def _row_to_topic(self, row: Dict[str, Any]) -> Topic:
         """Convert database row to Topic model.
 

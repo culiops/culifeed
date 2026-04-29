@@ -44,3 +44,28 @@ async def test_addtopic_generates_and_persists_description():
     update.message.reply_text.assert_called()
     msgs = " ".join(call.args[0] for call in update.message.reply_text.call_args_list)
     assert "Generated description for MyTopic." in msgs
+
+
+@pytest.mark.asyncio
+async def test_edit_topic_updates_description_and_clears_embedding():
+    """handle_edit_topic with integer first arg updates description and clears embedding_signature."""
+    from culifeed.bot.commands.topic_commands import TopicCommandHandler
+
+    handler = TopicCommandHandler.__new__(TopicCommandHandler)  # bypass __init__
+    handler.logger = MagicMock()
+    handler.topic_repo = MagicMock()
+    handler.topic_repo.update_description = MagicMock()
+    handler.topic_repo.clear_embedding_signature = MagicMock()
+    handler._handle_error = AsyncMock()
+
+    update = MagicMock()
+    update.message = MagicMock()
+    update.message.reply_text = AsyncMock()
+    context = MagicMock()
+    context.args = ["1", "New description text"]
+
+    await handler.handle_edit_topic(update, context)
+
+    handler.topic_repo.update_description.assert_called_once_with(1, "New description text")
+    handler.topic_repo.clear_embedding_signature.assert_called_once_with(1)
+    update.message.reply_text.assert_awaited_once()
