@@ -1,0 +1,40 @@
+services:
+  culifeed-prd:
+    build:
+      context: .
+      dockerfile: Dockerfile.alpine
+      args:
+        UID: 1001
+        GID: 1001
+    image: culifeed:local
+    container_name: culifeed-prd
+    restart: unless-stopped
+    env_file:
+      - .env.prd
+    environment:
+      - TZ=UTC
+      - CULIFEED_FILTERING__USE_EMBEDDING_PIPELINE=true
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  sqlitebrowser:
+    image: linuxserver/sqlitebrowser
+    container_name: sqlitebrowser
+    restart: unless-stopped
+    ports:
+      - "100.76.118.121:3001:3001"
+    volumes:
+      - ./sqlitebrowser/config:/config
+      - ./data:/data
+    environment:
+      - PUID=1001
+      - PGID=1001
+      - TZ=Etc/UTC
