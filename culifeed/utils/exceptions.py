@@ -25,6 +25,7 @@ class ErrorCode(str, Enum):
     DATABASE_TRANSACTION = "D004"
     DATABASE_CORRUPTION = "D005"
     DATABASE_ERROR = "D006"
+    VECTOR_STORE_UNAVAILABLE = "D007"
 
     # Feed ingestion errors (F001-F099)
     FEED_INVALID_URL = "F001"
@@ -39,6 +40,7 @@ class ErrorCode(str, Enum):
     CONTENT_TOO_LARGE = "P002"
     CONTENT_EXTRACTION_FAILED = "P003"
     PRE_FILTER_ERROR = "P004"
+    CONTENT_EMPTY = "P005"
 
     # AI processing errors (A001-A099)
     AI_API_ERROR = "A001"
@@ -51,6 +53,7 @@ class ErrorCode(str, Enum):
     AI_PROVIDER_UNAVAILABLE = "A008"
     AI_INVALID_CREDENTIALS = "A009"
     AI_CONNECTION_ERROR = "A010"
+    AI_EMBEDDING_ERROR = "A011"
 
     # Telegram bot errors (T001-T099)
     TELEGRAM_API_ERROR = "T001"

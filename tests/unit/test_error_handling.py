@@ -509,6 +509,13 @@ class TestIntegrationScenarios:
         assert attempt_count == 4
 
 
+def test_new_error_codes_exist():
+    from culifeed.utils.exceptions import ErrorCode
+    assert ErrorCode.AI_EMBEDDING_ERROR.value == "A011"
+    assert ErrorCode.VECTOR_STORE_UNAVAILABLE.value == "D007"
+    assert ErrorCode.CONTENT_EMPTY.value == "P005"
+
+
 if __name__ == "__main__":
     # Run tests directly
     pytest.main([__file__, "-v"])
