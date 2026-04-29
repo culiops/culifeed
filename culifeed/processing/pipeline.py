@@ -27,6 +27,12 @@ from .pre_filter import PreFilterEngine, FilterResult
 from ..ai.ai_manager import AIManager
 from ..ai.providers.base import AIResult
 
+# v2 pipeline components (lazy-imported on use to keep v1 callers
+# without OpenAI keys working)
+from .topic_matcher import TopicMatcher
+from .llm_gate import LLMGate
+from ..storage.vector_store import VectorStore
+
 
 @dataclass
 class PipelineResult:
@@ -144,14 +150,28 @@ class PipelineResult:
 class ProcessingPipeline:
     """Complete content processing pipeline orchestrator."""
 
-    def __init__(self, db_connection: DatabaseConnection):
+    def __init__(
+        self,
+        db_connection: DatabaseConnection,
+        settings=None,
+        ai_manager=None,
+        embedding_service=None,
+        vector_store=None,
+    ):
         """Initialize processing pipeline.
 
         Args:
             db_connection: Database connection manager
+            settings: Optional settings override (defaults to get_settings()).
+                Useful for tests that need to flip feature flags.
+            ai_manager: Optional AIManager instance (defaults to AIManager()).
+            embedding_service: Optional v2 EmbeddingService. Lazy-created on
+                first v2 invocation if not provided.
+            vector_store: Optional v2 VectorStore. Defaults to a VectorStore
+                bound to the same db_connection.
         """
         self.db = db_connection
-        self.settings = get_settings()
+        self.settings = settings if settings is not None else get_settings()
         self.logger = get_logger_for_component("pipeline")
 
         # Initialize components with settings
@@ -167,8 +187,8 @@ class ProcessingPipeline:
             self.settings
         )  # Pass settings for configurable thresholds
 
-        # AI Integration - Initialize AI Manager
-        self.ai_manager = AIManager()
+        # AI Integration - Initialize AI Manager (allow injection for tests)
+        self.ai_manager = ai_manager if ai_manager is not None else AIManager()
 
         # Smart Processing - Initialize Smart Keyword Analyzer
         if self.settings.smart_processing.enabled:
@@ -178,18 +198,33 @@ class ProcessingPipeline:
         else:
             self.smart_analyzer = None
 
+        # v2 pipeline state — created lazily so that v1 callers without
+        # an OpenAI key continue to work.
+        self._embedding_service = embedding_service
+        self._vector_store = vector_store if vector_store is not None else VectorStore(db_connection)
+        self._topic_matcher: Optional[TopicMatcher] = None
+        self._llm_gate: Optional[LLMGate] = None
+
     async def process_channel(
         self, chat_id: str, max_articles_per_topic: int = None
     ) -> PipelineResult:
         """Process all feeds for a single channel.
 
-        Args:
-            chat_id: Channel chat ID to process
-            max_articles_per_topic: Maximum articles per topic (default from config)
-
-        Returns:
-            PipelineResult with processing statistics
+        Dispatches to the v2 (embedding-based) path when
+        ``settings.filtering.use_embedding_pipeline`` is set, otherwise
+        runs the v1 keyword + LLM-relevance path.
         """
+        if getattr(self.settings.filtering, "use_embedding_pipeline", False):
+            await self._process_channel_v2(chat_id)
+            # v2 currently returns void; surface an empty result for callers
+            # that expect a PipelineResult (multi-channel orchestrator etc.)
+            return self._create_empty_result(chat_id, [])
+        return await self._process_channel_v1(chat_id, max_articles_per_topic)
+
+    async def _process_channel_v1(
+        self, chat_id: str, max_articles_per_topic: int = None
+    ) -> PipelineResult:
+        """Original v1 keyword pre-filter + AI relevance pipeline."""
         if max_articles_per_topic is None:
             max_articles_per_topic = self.settings.processing.max_articles_per_topic
 
@@ -993,6 +1028,199 @@ class ProcessingPipeline:
         self.logger.info(
             f"Stored {len(processing_results)} processing results with topic relationships"
         )
+
+    # ------------------------------------------------------------------
+    # v2 embedding pipeline
+    # ------------------------------------------------------------------
+
+    async def _process_channel_v2(self, chat_id: str) -> None:
+        """Run the v2 embedding + LLM-gate pipeline for one channel.
+
+        Stages:
+            1. Pre-filter (keyword) — survivors only proceed.
+            2. Batch-embed survivors and upsert into the article vector store.
+            3. Rank each article against active topics via cosine similarity.
+            4. Single yes/no LLM gate on the chosen topic per article.
+            5. Persist a v2 row in processing_results for every survivor —
+               including failures, which land as decision='skipped'.
+        """
+        topics = self._get_channel_topics(chat_id)
+        if not topics:
+            self.logger.info(f"No active topics for channel {chat_id} (v2)")
+            return
+
+        # Lazy-create heavy services so that v1 callers without an OpenAI
+        # key never hit them.
+        if self._embedding_service is None:
+            from ..ai.embedding_service import EmbeddingService
+
+            self._embedding_service = EmbeddingService(
+                api_key=self.settings.ai.openai_api_key,
+                model=self.settings.filtering.embedding_model,
+            )
+        if self._topic_matcher is None:
+            self._topic_matcher = TopicMatcher(
+                self._embedding_service, self._vector_store, self.settings
+            )
+        if self._llm_gate is None:
+            self._llm_gate = LLMGate(self.ai_manager)
+
+        # Stage 0: ensure topic embeddings up to date and persist any
+        # signature changes back to the topics table.
+        await self._topic_matcher.ensure_topic_embeddings(topics)
+        self._persist_topic_signatures(topics)
+
+        # Stage 1: pre-filter
+        articles = self._get_unprocessed_articles(chat_id)
+        if not articles:
+            self.logger.info(f"No unprocessed articles for channel {chat_id} (v2)")
+            return
+        pre_filter_results = self.pre_filter.filter_articles(articles, topics)
+        survivors: List[Tuple[Article, float]] = [
+            (r.article, r.best_match_score)
+            for r in pre_filter_results
+            if r.best_match_score > 0
+        ]
+        if not survivors:
+            self.logger.info(
+                f"No articles survived pre-filter for channel {chat_id} (v2)"
+            )
+            return
+
+        # Stage 2: batch-embed survivors and upsert
+        article_texts = [self._topic_matcher._article_text(a) for a, _ in survivors]
+        try:
+            vecs = await self._embedding_service.embed_batch(article_texts)
+        except Exception as e:
+            self.logger.error(f"Article embedding batch failed: {e}", exc_info=True)
+            return
+        for (article, _), vec in zip(survivors, vecs):
+            try:
+                self._vector_store.upsert_article_embedding(article.id, vec)
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to upsert article embedding for {article.id}: {e}"
+                )
+
+        # Stage 3: per-article match (already-embedded; match() will re-embed
+        # but that is a no-op cost in tests with mocks; production deploys
+        # may optimise this in a follow-up).
+        matches = []
+        for article, _ in survivors:
+            try:
+                match = await self._topic_matcher.match(article, topics)
+            except Exception as e:
+                self.logger.warning(f"Match failed for article {article.id}: {e}")
+                # Synthesize empty match
+                from .topic_matcher import MatchResult
+
+                match = MatchResult(article_id=article.id)
+            matches.append(match)
+
+        # Stage 4: LLM gate per article (skip when no chosen topic). Errors
+        # are isolated per article — one provider crash must not kill the run.
+        for (article, pf_score), match in zip(survivors, matches):
+            gate_result = None
+            gate_error: Optional[str] = None
+            if match.chosen is not None:
+                try:
+                    gate_result = await self._llm_gate.judge(article, match.chosen)
+                except Exception as e:
+                    self.logger.warning(
+                        f"LLM gate failed for article {article.id}: {e}"
+                    )
+                    gate_error = str(e)
+            self._persist_v2_result(
+                article=article,
+                chat_id=chat_id,
+                match=match,
+                gate_result=gate_result,
+                pre_filter_score=pf_score,
+                gate_error=gate_error,
+            )
+
+    def _persist_topic_signatures(self, topics: List[Topic]) -> None:
+        """Write back any embedding_signature updates from TopicMatcher."""
+        with self.db.get_connection() as conn:
+            for t in topics:
+                if t.id is None:
+                    continue
+                if t.embedding_signature and t.embedding_updated_at:
+                    conn.execute(
+                        "UPDATE topics SET embedding_signature = ?, "
+                        "embedding_updated_at = ? WHERE id = ?",
+                        (t.embedding_signature, t.embedding_updated_at, t.id),
+                    )
+            conn.commit()
+
+    def _persist_v2_result(
+        self,
+        article: Article,
+        chat_id: str,
+        match,  # MatchResult
+        gate_result,  # Optional[GateResult]
+        pre_filter_score: float,
+        gate_error: Optional[str] = None,
+    ) -> None:
+        """Persist one v2 processing result row.
+
+        Schema-aligned: writes pre_filter_score, embedding_score (the chosen
+        topic similarity), embedding_top_topics (JSON), llm_decision,
+        llm_reasoning, and pipeline_version='v2'. ai_relevance_score and
+        confidence_score are mirrored from the embedding/gate values so v1
+        consumers (delivery scheduler) keep working.
+        """
+        import json as _json
+
+        top_topics_json = _json.dumps(
+            [
+                {"topic_id": t.id, "topic_name": t.name, "score": s}
+                for t, s in match.top_topics
+            ]
+        )
+        chosen_name = match.chosen.name if match.chosen else "__no_match__"
+
+        if gate_error is not None:
+            decision = "skipped"
+            confidence = 0.0
+            reasoning = f"LLM gate exception: {gate_error}"
+        elif gate_result is not None:
+            decision = "pass" if gate_result.passed else "fail"
+            confidence = gate_result.confidence
+            reasoning = gate_result.reasoning
+        else:
+            decision = "skipped"
+            confidence = 0.0
+            reasoning = "no chosen topic" if match.chosen is None else ""
+
+        with self.db.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO processing_results(
+                    article_id, chat_id, topic_name,
+                    pre_filter_score, embedding_score, embedding_top_topics,
+                    ai_relevance_score, confidence_score,
+                    llm_decision, llm_reasoning, pipeline_version
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2')
+                ON CONFLICT(article_id, chat_id, topic_name, pipeline_version)
+                DO NOTHING
+                """,
+                (
+                    article.id,
+                    chat_id,
+                    chosen_name,
+                    pre_filter_score,
+                    match.chosen_score,
+                    top_topics_json,
+                    match.chosen_score,
+                    confidence,
+                    decision,
+                    reasoning,
+                ),
+            )
+            conn.commit()
+
+    # ------------------------------------------------------------------
 
     def _create_empty_result(self, chat_id: str, errors: List[str]) -> PipelineResult:
         """Create empty pipeline result."""
