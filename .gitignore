@@ -176,6 +176,7 @@ data/
 # Configuration with sensitive data
 .env
 .env.local
+.env.prd
 .env.production
 config.local.yaml
 config.production.yaml
@@ -218,6 +219,9 @@ performance_logs/
 .claude/
 .serena/
 claudedocs/
+
+# SQLite Browser configuration
+sqlitebrowser/config/
 
 # OS generated files
 .DS_Store
@@ -275,5 +279,4 @@ test_outputs/
 *.prof
 *.pstats
 profile_output/
-scripts/*.py
 coverage.json

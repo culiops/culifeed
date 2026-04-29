@@ -119,6 +119,13 @@ class AIProvider(ABC):
 
         self._settings = get_settings()
 
+    async def complete(self, prompt: str) -> str:
+        """Raw single-prompt completion. Returns the model's text output.
+
+        Subclasses should override.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement complete()")
+
     @abstractmethod
     async def analyze_relevance(self, article: Article, topic: Topic) -> AIResult:
         """Analyze article relevance to a topic.

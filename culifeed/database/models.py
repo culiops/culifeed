@@ -145,6 +145,17 @@ class Topic(BaseModel):
         default=None, description="Topic owner's Telegram user ID"
     )
 
+    # v2 embedding pipeline fields
+    description: Optional[str] = Field(
+        default=None, description="Natural-language topic description for embedding"
+    )
+    embedding_signature: Optional[str] = Field(
+        default=None, description="SHA256 of name|description|sorted(keywords); detects staleness"
+    )
+    embedding_updated_at: Optional[datetime] = Field(
+        default=None, description="When the embedding was last computed"
+    )
+
     @field_validator("keywords", "exclude_keywords")
     @classmethod
     def validate_keywords(cls, v):

@@ -21,13 +21,18 @@ from ..utils.validators import ContentValidator
 class TopicRepository:
     """Repository for Topic CRUD operations with database abstraction."""
 
-    def __init__(self, db_connection: DatabaseConnection):
+    def __init__(self, db_connection: DatabaseConnection, vector_store=None):
         """Initialize topic repository.
 
         Args:
             db_connection: Database connection manager
+            vector_store: Optional VectorStore for cleaning up topic
+                embeddings on delete. Default None keeps backward
+                compatibility for callers that don't use the v2
+                embedding pipeline.
         """
         self.db = db_connection
+        self.vector_store = vector_store
         self.logger = get_logger_for_component("topic_repository")
         self.settings = get_settings()
 
@@ -47,10 +52,10 @@ class TopicRepository:
             with self.db.get_connection() as conn:
                 cursor = conn.execute(
                     """
-                    INSERT INTO topics (chat_id, name, keywords, exclude_keywords, 
-                                      confidence_threshold, created_at, last_match_at, active, 
-                                      telegram_user_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO topics (chat_id, name, keywords, exclude_keywords,
+                                      confidence_threshold, created_at, last_match_at, active,
+                                      telegram_user_id, description)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         topic.chat_id,
@@ -62,6 +67,7 @@ class TopicRepository:
                         topic.last_match_at,
                         topic.active,
                         topic.telegram_user_id,
+                        topic.description,
                     ),
                 )
                 conn.commit()
@@ -335,12 +341,28 @@ class TopicRepository:
                 success = cursor.rowcount > 0
                 if success:
                     self.logger.debug(f"Deleted topic: {topic_id}")
+                    self._cleanup_topic_vector(topic_id)
 
                 return success
 
         except Exception as e:
             self.logger.error(f"Failed to delete topic {topic_id}: {e}")
             return False
+
+    def _cleanup_topic_vector(self, topic_id: int) -> None:
+        """Remove the topic's embedding row from the vector store, if wired."""
+        if self.vector_store is None:
+            self.logger.debug(
+                f"No vector_store wired; skipping embedding cleanup for topic {topic_id}"
+            )
+            return
+        try:
+            self.vector_store.delete_topic_embedding(topic_id)
+        except Exception as e:
+            # Don't let vector cleanup failure mask the successful row delete.
+            self.logger.warning(
+                f"Failed to delete topic_embeddings row for topic {topic_id}: {e}"
+            )
 
     def delete_topics_for_chat(self, chat_id: str) -> int:
         """Delete all topics for a specific chat.
@@ -353,6 +375,12 @@ class TopicRepository:
         """
         try:
             with self.db.get_connection() as conn:
+                # Capture topic IDs first so we can clean up their embeddings.
+                ids_cur = conn.execute(
+                    "SELECT id FROM topics WHERE chat_id = ?", (chat_id,)
+                )
+                topic_ids = [row[0] for row in ids_cur.fetchall()]
+
                 cursor = conn.execute(
                     "DELETE FROM topics WHERE chat_id = ?", (chat_id,)
                 )
@@ -360,6 +388,9 @@ class TopicRepository:
 
                 deleted_count = cursor.rowcount
                 self.logger.info(f"Deleted {deleted_count} topics for chat {chat_id}")
+
+                for tid in topic_ids:
+                    self._cleanup_topic_vector(tid)
 
                 return deleted_count
 
@@ -481,6 +512,57 @@ class TopicRepository:
         except Exception as e:
             self.logger.error(f"Failed to get topic statistics: {e}")
             return {}
+
+    def update_description(self, topic_id: int, description: str) -> None:
+        """Update topic description.
+
+        Args:
+            topic_id: Topic ID to update
+            description: New description text
+
+        Raises:
+            DatabaseError: If update fails
+        """
+        try:
+            with self.db.get_connection() as conn:
+                conn.execute(
+                    "UPDATE topics SET description = ? WHERE id = ?",
+                    (description, topic_id),
+                )
+                conn.commit()
+
+            self.logger.debug(f"Updated description for topic {topic_id}")
+
+        except Exception as e:
+            raise DatabaseError(
+                f"Failed to update description for topic {topic_id}: {e}",
+                error_code=ErrorCode.DATABASE_ERROR,
+            ) from e
+
+    def clear_embedding_signature(self, topic_id: int) -> None:
+        """Clear embedding signature so the topic is re-embedded on next pipeline run.
+
+        Args:
+            topic_id: Topic ID to clear embedding signature for
+
+        Raises:
+            DatabaseError: If update fails
+        """
+        try:
+            with self.db.get_connection() as conn:
+                conn.execute(
+                    "UPDATE topics SET embedding_signature = NULL, embedding_updated_at = NULL WHERE id = ?",
+                    (topic_id,),
+                )
+                conn.commit()
+
+            self.logger.debug(f"Cleared embedding signature for topic {topic_id}")
+
+        except Exception as e:
+            raise DatabaseError(
+                f"Failed to clear embedding signature for topic {topic_id}: {e}",
+                error_code=ErrorCode.DATABASE_ERROR,
+            ) from e
 
     def _row_to_topic(self, row: Dict[str, Any]) -> Topic:
         """Convert database row to Topic model.

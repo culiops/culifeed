@@ -27,6 +27,7 @@ from ...utils.validators import ContentValidator, ValidationError
 from ...config.settings import get_settings
 from ...ai.ai_manager import AIManager
 from ...utils.exceptions import TelegramError, ErrorCode, AIError
+from ...processing.topic_description_generator import TopicDescriptionGenerator
 
 
 class TopicCommandHandler:
@@ -190,6 +191,15 @@ class TopicCommandHandler:
                     )
                     return
 
+            # v2: generate a description for embedding-based matching
+            description: str
+            try:
+                gen = TopicDescriptionGenerator(self.ai_manager)
+                description = await gen.generate(name=validated_name, keywords=validated_keywords)
+            except Exception as e:
+                self.logger.warning(f"Description generation failed: {e}")
+                description = f"{validated_name}. Keywords: {', '.join(validated_keywords)}"
+
             # Check if topic already exists
             existing_topic = self.topic_repo.get_topic_by_name(chat_id, validated_name)
             if existing_topic:
@@ -209,6 +219,7 @@ class TopicCommandHandler:
                 confidence_threshold=0.6,  # Default threshold (Phase 1)
                 active=True,
                 telegram_user_id=telegram_user_id,  # NEW: Set topic owner
+                description=description,
             )
 
             # Save to database
@@ -218,9 +229,10 @@ class TopicCommandHandler:
                 success_message = (
                     f"✅ *Topic '{validated_name}' created successfully!*\n\n"
                     f"*Keywords:* {', '.join(validated_keywords)}\n"
+                    f"*Description:* {description}\n"
                     f"*Confidence threshold:* {topic.confidence_threshold}\n\n"
-                    f"🎯 I'll now look for content matching these keywords!\n\n"
-                    f"💡 Add RSS feeds with `/addfeed` to start getting content."
+                    f"🎯 I'll now look for content matching this topic!\n\n"
+                    f"💡 Use `/edittopic` to refine the description, or `/addfeed` to add RSS feeds."
                 )
                 await update.message.reply_text(success_message, parse_mode="Markdown")
 
@@ -311,7 +323,9 @@ class TopicCommandHandler:
     ) -> None:
         """Handle /edittopic command - edit an existing topic.
 
-        Format: /edittopic <name> <new_keywords>
+        Two modes:
+        - /edittopic <topic_id> <new description>  — updates description and clears embedding
+        - /edittopic <name> <keyword1, keyword2>   — updates topic keywords (legacy mode)
 
         Args:
             update: Telegram update object
@@ -323,6 +337,11 @@ class TopicCommandHandler:
 
             if not args:
                 await self._send_edit_topic_help(update)
+                return
+
+            # Detect new mode: first arg is an integer topic_id
+            if args[0].isdigit():
+                await self._handle_edit_topic_description(update, context, args)
                 return
 
             # Parse arguments using smart topic name matching
@@ -375,6 +394,55 @@ class TopicCommandHandler:
 
         except Exception as e:
             await self._handle_error(update, "edit topic", e)
+
+    async def _handle_edit_topic_description(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE, args: List[str]
+    ) -> None:
+        """Handle /edittopic <topic_id> <new description> — update description and clear embedding.
+
+        Args:
+            update: Telegram update object
+            context: Bot context
+            args: Parsed command arguments
+        """
+        if len(args) < 2:
+            await update.message.reply_text(
+                "❌ *Usage:* `/edittopic <topic_id> <new description>`\n\n"
+                "Example: `/edittopic 3 A topic about cloud computing and DevOps`",
+                parse_mode="Markdown",
+            )
+            return
+
+        try:
+            topic_id = int(args[0])
+        except ValueError:
+            await update.message.reply_text(
+                "❌ *Invalid topic ID.* The first argument must be a number.\n\n"
+                "Use `/topics` to see your topics and their IDs.",
+                parse_mode="Markdown",
+            )
+            return
+
+        description = " ".join(args[1:]).strip()[:300]
+
+        if not description:
+            await update.message.reply_text(
+                "❌ *Description cannot be empty.*\n\n"
+                "Usage: `/edittopic <topic_id> <new description>`",
+                parse_mode="Markdown",
+            )
+            return
+
+        self.topic_repo.update_description(topic_id, description)
+        self.topic_repo.clear_embedding_signature(topic_id)
+
+        await update.message.reply_text(
+            f"✅ *Topic updated!*\n\n"
+            f"*New description:* {description}\n\n"
+            f"The topic will be re-embedded on the next pipeline run.",
+            parse_mode="Markdown",
+        )
+        self.logger.info(f"Updated description for topic {topic_id}")
 
     async def _generate_keywords_with_ai(
         self, topic_name: str, chat_id: str

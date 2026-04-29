@@ -67,15 +67,19 @@ class TestDatabaseSchema:
             )
             tables = [row[0] for row in cursor.fetchall()]
 
-        expected_tables = [
+        expected_tables = {
             "articles",
             "channels",
             "feeds",
             "processing_results",
             "topics",
             "user_subscriptions",  # Added for SaaS pricing feature
-        ]
-        assert set(tables) == set(expected_tables)
+            "topic_embeddings",  # sqlite-vec virtual table for v2 pipeline
+            "article_embeddings",  # sqlite-vec virtual table for v2 pipeline
+        }
+        # sqlite-vec creates aux shadow tables (e.g. *_chunks, *_rowids); the
+        # expected core tables must be a subset of what's present.
+        assert expected_tables.issubset(set(tables))
 
     def test_verify_schema(self, tmp_path):
         """Test schema verification."""
@@ -527,6 +531,18 @@ def tmp_path():
     """Create temporary directory for tests."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir)
+
+
+def test_embedding_settings_defaults():
+    from culifeed.config.settings import get_settings
+    s = get_settings()
+    assert s.filtering.embedding_provider == "openai"
+    assert s.filtering.embedding_model == "text-embedding-3-small"
+    assert 0.0 <= s.filtering.embedding_min_score <= 1.0
+    assert s.filtering.embedding_min_score == 0.45
+    assert s.filtering.embedding_fallback_threshold == 0.65
+    assert s.filtering.embedding_retention_days == 90
+    assert s.filtering.use_embedding_pipeline is False
 
 
 if __name__ == "__main__":

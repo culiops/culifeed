@@ -35,3 +35,6 @@ rich>=13.9.0                   # Rich console output for CLI
 
 # Production deployment
 supervisor>=4.2.5              # Process management (Python version - no system package needed)
+
+# Vector search
+sqlite-vec>=0.1.0              # SQLite vector extension for embedding similarity search

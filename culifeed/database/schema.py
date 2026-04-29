@@ -18,6 +18,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+import sqlite_vec
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +38,10 @@ class DatabaseSchema:
     def create_tables(self) -> None:
         """Create all database tables with proper schema."""
         with sqlite3.connect(self.db_path) as conn:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+
             conn.execute("PRAGMA foreign_keys = ON")
 
             # Create tables in dependency order
@@ -45,6 +51,7 @@ class DatabaseSchema:
             self._create_topics_table(conn)
             self._create_feeds_table(conn)
             self._create_processing_results_table(conn)
+            self._create_vector_tables(conn)
 
             # Run migrations for existing databases
             self._run_migrations(conn)
@@ -120,6 +127,9 @@ class DatabaseSchema:
                 last_match_at TIMESTAMP,
                 active BOOLEAN DEFAULT TRUE,
                 telegram_user_id INTEGER,  -- NEW: User ownership for SaaS pricing
+                description TEXT,
+                embedding_signature TEXT,
+                embedding_updated_at TIMESTAMP,
                 FOREIGN KEY (chat_id) REFERENCES channels(chat_id) ON DELETE CASCADE,
                 FOREIGN KEY (telegram_user_id) REFERENCES user_subscriptions(telegram_user_id) ON DELETE SET NULL,
                 UNIQUE(chat_id, name)
@@ -164,12 +174,31 @@ class DatabaseSchema:
                 processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 delivered BOOLEAN DEFAULT FALSE,
                 delivery_error TEXT,
+                embedding_score REAL,
+                embedding_top_topics TEXT,
+                llm_decision TEXT,
+                llm_reasoning TEXT,
+                pipeline_version TEXT DEFAULT 'v1',
                 FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
-                FOREIGN KEY (chat_id) REFERENCES channels(chat_id) ON DELETE CASCADE,
-                UNIQUE(article_id, chat_id, topic_name)
+                FOREIGN KEY (chat_id) REFERENCES channels(chat_id) ON DELETE CASCADE
             )
         """
         )
+
+    def _create_vector_tables(self, conn: sqlite3.Connection) -> None:
+        """Create sqlite-vec virtual tables for v2 embedding pipeline."""
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS topic_embeddings USING vec0(
+                topic_id INTEGER PRIMARY KEY,
+                embedding FLOAT[1536]
+            )
+        """)
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS article_embeddings USING vec0(
+                article_id TEXT PRIMARY KEY,
+                embedding FLOAT[1536]
+            )
+        """)
 
     def _create_indexes(self, conn: sqlite3.Connection) -> None:
         """Create database indexes for optimal query performance."""
@@ -197,6 +226,7 @@ class DatabaseSchema:
             "CREATE INDEX IF NOT EXISTS idx_processing_chat_delivered ON processing_results(chat_id, delivered)",
             "CREATE INDEX IF NOT EXISTS idx_processing_processed_at ON processing_results(processed_at)",
             "CREATE INDEX IF NOT EXISTS idx_processing_confidence ON processing_results(confidence_score)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_processing_unique_v2 ON processing_results(article_id, chat_id, topic_name, pipeline_version)",
         ]
 
         for index_sql in indexes:
@@ -217,11 +247,72 @@ class DatabaseSchema:
             conn.execute("ALTER TABLE topics ADD COLUMN telegram_user_id INTEGER")
             # Note: Foreign key constraint will be added in next migration if needed
 
+        # Migration 2: Add description + embedding metadata to topics (v2 pipeline)
+        cursor = conn.execute("PRAGMA table_info(topics)")
+        topic_columns = [column[1] for column in cursor.fetchall()]
+        if "description" not in topic_columns:
+            logger.info("Adding description column to topics table")
+            conn.execute("ALTER TABLE topics ADD COLUMN description TEXT")
+        if "embedding_signature" not in topic_columns:
+            logger.info("Adding embedding_signature column to topics table")
+            conn.execute("ALTER TABLE topics ADD COLUMN embedding_signature TEXT")
+        if "embedding_updated_at" not in topic_columns:
+            logger.info("Adding embedding_updated_at column to topics table")
+            conn.execute("ALTER TABLE topics ADD COLUMN embedding_updated_at TIMESTAMP")
+
+        # Migration 3: processing_results v2 columns + widen UNIQUE to include pipeline_version
+        cursor = conn.execute("PRAGMA table_info(processing_results)")
+        pr_columns = [column[1] for column in cursor.fetchall()]
+        if "pipeline_version" not in pr_columns:
+            logger.info("Migrating processing_results to v2 schema (rebuild required)")
+            # The original table has an inline UNIQUE(article_id, chat_id, topic_name) auto-index
+            # which we cannot DROP directly; rebuild the table to widen the constraint.
+            conn.executescript("""
+                CREATE TABLE processing_results_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    article_id TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    topic_name TEXT NOT NULL,
+                    pre_filter_score REAL,
+                    ai_relevance_score REAL,
+                    confidence_score REAL,
+                    summary TEXT,
+                    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    delivered BOOLEAN DEFAULT FALSE,
+                    delivery_error TEXT,
+                    embedding_score REAL,
+                    embedding_top_topics TEXT,
+                    llm_decision TEXT,
+                    llm_reasoning TEXT,
+                    pipeline_version TEXT DEFAULT 'v1',
+                    FOREIGN KEY (article_id) REFERENCES articles(id) ON DELETE CASCADE,
+                    FOREIGN KEY (chat_id) REFERENCES channels(chat_id) ON DELETE CASCADE
+                );
+
+                INSERT INTO processing_results_new (
+                    id, article_id, chat_id, topic_name, pre_filter_score,
+                    ai_relevance_score, confidence_score, summary, processed_at,
+                    delivered, delivery_error
+                )
+                SELECT id, article_id, chat_id, topic_name, pre_filter_score,
+                    ai_relevance_score, confidence_score, summary, processed_at,
+                    delivered, delivery_error
+                FROM processing_results;
+
+                DROP TABLE processing_results;
+                ALTER TABLE processing_results_new RENAME TO processing_results;
+            """)
+
     def drop_tables(self) -> None:
         """Drop all tables (for testing/reset purposes)."""
         with sqlite3.connect(self.db_path) as conn:
-            # Drop in reverse dependency order
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            # Drop in reverse dependency order; virtual tables first
             tables = [
+                "topic_embeddings",
+                "article_embeddings",
                 "processing_results",
                 "feeds",
                 "topics",
@@ -264,11 +355,14 @@ class DatabaseSchema:
                     "processing_results",
                     "topics",
                     "user_subscriptions",
+                    "topic_embeddings",
+                    "article_embeddings",
                 }
 
-                if set(tables) != expected_tables:
+                if not expected_tables.issubset(set(tables)):
+                    missing = expected_tables - set(tables)
                     logger.error(
-                        f"Missing tables. Expected: {expected_tables}, Found: {set(tables)}"
+                        f"Missing tables. Expected (subset): {expected_tables}, Missing: {missing}, Found: {set(tables)}"
                     )
                     return False
 

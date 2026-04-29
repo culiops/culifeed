@@ -485,6 +485,11 @@ class GeminiProvider(AIProvider):
             self.model_name = original_model
             self.model = original_model_obj
 
+    async def complete(self, prompt: str) -> str:
+        """Raw single-prompt completion. Returns the model's text output."""
+        response = await self._make_gemini_request(prompt)
+        return response.text
+
     async def _make_gemini_request(self, prompt: str) -> Any:
         """Make request to Gemini API.
 
