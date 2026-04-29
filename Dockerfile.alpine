@@ -1,34 +1,32 @@
-# CuliFeed Multi-Service Docker Container - Alpine Optimized
+# CuliFeed Multi-Service Docker Container - Slim
 # Runs both Telegram bot and daily processing scheduler
-# Image size reduced from ~180MB to ~50MB (72% reduction)
+# NOTE: uses python:3.11-slim (Debian) because sqlite-vec has no musl/Alpine wheel
 
-FROM python:3.11-alpine
+FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install minimal system dependencies (supervisor handled by pip requirements)
-RUN apk add --no-cache \
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     ca-certificates \
     bash \
-    && rm -rf /var/cache/apk/*
+    && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user (Alpine uses adduser instead of useradd)
-RUN adduser -D -s /bin/bash culifeed && \
+# Create non-root user
+ARG UID=1000
+ARG GID=1000
+RUN groupadd -g ${GID} culifeed && \
+    useradd -u ${UID} -g culifeed -s /bin/bash -m culifeed && \
     mkdir -p /app/logs && \
     chown -R culifeed:culifeed /app
 
 # Copy requirements first for better Docker layer caching
 COPY requirements.txt .
 
-# Install Python dependencies with build deps in single layer
-RUN apk add --no-cache --virtual .build-deps \
-    gcc \
-    musl-dev \
-    python3-dev \
-    && pip install --no-cache-dir -r requirements.txt \
-    && apk del .build-deps \
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt \
     && rm -rf /root/.cache/pip
 
 # Copy application code
