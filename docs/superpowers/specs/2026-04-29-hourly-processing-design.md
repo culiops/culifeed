@@ -28,9 +28,9 @@ Patch the existing scheduler service loop in place. No new infra. Quiet hours ga
 ## Behavior summary
 
 - **Processing:** runs every `processing_interval_hours` (default 1), 24/7. Scheduler loop wakes every 5 minutes and runs the pipeline if the configured interval has elapsed since `last_processed_at`.
-- **Delivery during active hours:** sends Telegram digests immediately.
-- **Delivery during quiet hours:** queues deliverable articles to a `pending_deliveries` table; no Telegram calls.
-- **Flush:** at the *start* of every run, before pipeline processing, the scheduler calls `flush_pending` for each active channel if we are now outside quiet hours. This is the only place flush happens — `message_sender.send` is not responsible for flushing. As a result, queued articles from a quiet hour are delivered on the first run after quiet-end, in the same digest as any new articles found that hour (since the run flushes first, then sends new).
+- **Delivery during active hours:** runs `deliver_daily_digest` for each channel as today.
+- **Delivery during quiet hours:** scheduler skips the delivery call. Pipeline still writes results to `processing_results` with `delivered = 0`, which is the existing "ready for delivery" state.
+- **Flush:** no separate flush logic needed. The next active-hour run calls `deliver_daily_digest`, which already queries `WHERE delivered = 0` and picks up everything queued during quiet hours along with anything new from the current run.
 
 ## Files & changes
 
@@ -69,32 +69,20 @@ Patch the existing scheduler service loop in place. No new infra. Quiet hours ga
 - Program `culifeed-daily` → `culifeed-scheduler`. `command = python run_scheduler.py --service`.
 - Document rename in `OPERATIONS.md`.
 
+### `culifeed/scheduler/hourly_scheduler.py` — quiet-hour gate
+
+- New helper `_in_quiet_hours(now: datetime, start: int, end: int) -> bool` handling wrap-around (`start > end` ⇒ window crosses midnight) and the equal-start-end case (no quiet hours, always returns False).
+- In `_process_channel`, the existing call to `message_sender.deliver_daily_digest` is wrapped:
+  - If `_in_quiet_hours(now, start, end)` → skip the call. Articles remain in `processing_results` with `delivered = 0`. Log INFO `delivery skipped: quiet hours`.
+  - Else → call as today.
+
 ### `culifeed/delivery/message_sender.py`
 
-- New helper `_in_quiet_hours(now, start, end) -> bool` handling the wrap-around case.
-- Send path:
-  1. If in quiet hours → insert row into `pending_deliveries`, return without calling Telegram.
-  2. Else → call existing send logic.
-- New method `flush_pending(chat_id) -> List[PendingDelivery]` returning queued rows for a channel and deleting them on successful send. Failed sends leave rows in place; `delivery_attempts` increments; rows with `delivery_attempts >= 5` are deleted with an ERROR log.
+No structural changes. Existing `_get_articles_for_delivery` already queries `WHERE delivered = 0`, so it naturally picks up rows queued during quiet hours alongside fresh ones.
 
-### Database — new table
+### Database
 
-```sql
-CREATE TABLE pending_deliveries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chat_id TEXT NOT NULL,
-    article_id TEXT NOT NULL,
-    topic_id INTEGER,
-    relevance_score REAL,
-    summary TEXT,
-    delivery_attempts INTEGER NOT NULL DEFAULT 0,
-    queued_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(chat_id, article_id, topic_id)
-);
-CREATE INDEX idx_pending_deliveries_chat ON pending_deliveries(chat_id);
-```
-
-Created via the standard schema-init path on next startup. No data migration needed.
+No schema changes. The existing `processing_results.delivered` column is the queue.
 
 ### `culifeed/processing/pipeline.py` — cost guard
 
@@ -107,27 +95,25 @@ Created via the standard schema-init path on next startup. No data migration nee
 ## Migration
 
 - `daily_run_hour` in `.env.prd` or YAML: read on startup; if present, emit one WARNING log on startup and ignore. Do not fail.
-- No DB migration script needed — `CREATE TABLE IF NOT EXISTS` in schema init handles it.
+- No DB migration needed — reuses existing `processing_results.delivered` column.
 - Supervisord program rename: `OPERATIONS.md` gets a note about the renamed program for `supervisorctl` users.
 
 ## Error handling
 
-- Telegram send failure during flush: leave row, increment `delivery_attempts`, retry next run. Drop after 5 attempts with ERROR log (avoids infinite retry on a permanently invalid chat).
+- Telegram send failure: existing `delivery_error` column + retry-next-run behavior unchanged.
 - Pipeline failure for one channel: existing isolation unchanged.
-- DB failure on `pending_deliveries` insert: log ERROR, fall through (article will be picked up again next run via standard processing — content-hash dedup means we won't re-AI-score it, but we may re-deliver to active hours; acceptable for solo use).
+- No new failure modes introduced by this change.
 
 ## Testing
 
 **Unit:**
 - `_in_quiet_hours` boundary cases: wrap (22→7), non-wrap (7→22), equal start/end, exact boundary minutes (`22:00:00`, `06:59:59`, `07:00:00`).
 - `HourlyScheduler` interval check: `last_processed_at is None`, just-elapsed, not-yet, far-past.
-- `flush_pending` with mixed new + queued articles → single digest, queued rows deleted on success.
-- `delivery_attempts` increment + drop at 5.
 - Pipeline cost cap: more than `max_ai_calls_per_run` candidates → top-N processed, rest deferred, WARNING logged.
 
 **Integration:**
-- Full run with `now` mocked into quiet hour → no Telegram call, row in `pending_deliveries`.
-- Subsequent run with `now` mocked outside quiet hour → flush succeeds, new articles merged into one digest, table empty after.
+- Full run with `now` mocked into quiet hour → pipeline writes results with `delivered = 0`, `deliver_daily_digest` is NOT called.
+- Subsequent run with `now` mocked outside quiet hour → `deliver_daily_digest` called, queued rows + new rows delivered together, all marked `delivered = 1`.
 
 **Regression:** existing pipeline tests unchanged.
 
