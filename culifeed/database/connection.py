@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Optional, Generator, Any, List, Dict
 from queue import Queue, Empty
 
+import sqlite_vec
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,6 +55,19 @@ class DatabaseConnection:
             check_same_thread=False,  # Allow connection sharing across threads
             timeout=30.0,  # 30 second timeout for database locks
         )
+
+        # Load sqlite-vec extension for vector similarity search
+        try:
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+        except Exception as e:
+            from culifeed.utils.exceptions import CuliFeedError, ErrorCode
+            raise CuliFeedError(
+                "sqlite-vec extension failed to load",
+                # TODO(A2): replace with ErrorCode.VECTOR_STORE_UNAVAILABLE once added
+                error_code=ErrorCode.DATABASE_CONNECTION,
+            ) from e
 
         # Enable optimizations and features
         conn.execute("PRAGMA foreign_keys = ON")
