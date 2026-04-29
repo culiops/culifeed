@@ -27,6 +27,7 @@ from ...utils.validators import ContentValidator, ValidationError
 from ...config.settings import get_settings
 from ...ai.ai_manager import AIManager
 from ...utils.exceptions import TelegramError, ErrorCode, AIError
+from ...processing.topic_description_generator import TopicDescriptionGenerator
 
 
 class TopicCommandHandler:
@@ -190,6 +191,15 @@ class TopicCommandHandler:
                     )
                     return
 
+            # v2: generate a description for embedding-based matching
+            description: str
+            try:
+                gen = TopicDescriptionGenerator(self.ai_manager)
+                description = await gen.generate(name=validated_name, keywords=validated_keywords)
+            except Exception as e:
+                self.logger.warning(f"Description generation failed: {e}")
+                description = f"{validated_name}. Keywords: {', '.join(validated_keywords)}"
+
             # Check if topic already exists
             existing_topic = self.topic_repo.get_topic_by_name(chat_id, validated_name)
             if existing_topic:
@@ -209,6 +219,7 @@ class TopicCommandHandler:
                 confidence_threshold=0.6,  # Default threshold (Phase 1)
                 active=True,
                 telegram_user_id=telegram_user_id,  # NEW: Set topic owner
+                description=description,
             )
 
             # Save to database
@@ -218,9 +229,10 @@ class TopicCommandHandler:
                 success_message = (
                     f"✅ *Topic '{validated_name}' created successfully!*\n\n"
                     f"*Keywords:* {', '.join(validated_keywords)}\n"
+                    f"*Description:* {description}\n"
                     f"*Confidence threshold:* {topic.confidence_threshold}\n\n"
-                    f"🎯 I'll now look for content matching these keywords!\n\n"
-                    f"💡 Add RSS feeds with `/addfeed` to start getting content."
+                    f"🎯 I'll now look for content matching this topic!\n\n"
+                    f"💡 Use `/edittopic` to refine the description, or `/addfeed` to add RSS feeds."
                 )
                 await update.message.reply_text(success_message, parse_mode="Markdown")
 

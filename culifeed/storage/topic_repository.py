@@ -47,10 +47,10 @@ class TopicRepository:
             with self.db.get_connection() as conn:
                 cursor = conn.execute(
                     """
-                    INSERT INTO topics (chat_id, name, keywords, exclude_keywords, 
-                                      confidence_threshold, created_at, last_match_at, active, 
-                                      telegram_user_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO topics (chat_id, name, keywords, exclude_keywords,
+                                      confidence_threshold, created_at, last_match_at, active,
+                                      telegram_user_id, description)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         topic.chat_id,
@@ -62,6 +62,7 @@ class TopicRepository:
                         topic.last_match_at,
                         topic.active,
                         topic.telegram_user_id,
+                        topic.description,
                     ),
                 )
                 conn.commit()
