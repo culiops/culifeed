@@ -83,14 +83,31 @@ class TopicMatcher:
             t.embedding_signature = self._compute_signature(t)
             t.embedding_updated_at = now
 
-    async def match(self, article: Article, topics: List[Topic]) -> MatchResult:
-        """Embed the article and rank it against active topics."""
+    async def match(
+        self,
+        article: Article,
+        topics: List[Topic],
+        *,
+        article_vector: Optional[List[float]] = None,
+    ) -> MatchResult:
+        """Embed the article (if needed) and rank it against active topics.
+
+        Args:
+            article: Article to match.
+            topics: Candidate topics.
+            article_vector: Optional precomputed embedding. When supplied, the
+                embedding API is NOT called and the vector is assumed to have
+                already been upserted into the vector store by the caller.
+                This avoids the "double embedding" cost when the pipeline
+                batch-embeds survivors before per-article matching.
+        """
         if not topics:
             return MatchResult(article_id=article.id, top_topics=[], chosen=None, chosen_score=0.0)
 
-        text = self._article_text(article)
-        vec = await self._embeddings.embed(text)
-        self._vectors.upsert_article_embedding(article.id, vec)
+        if article_vector is None:
+            text = self._article_text(article)
+            article_vector = await self._embeddings.embed(text)
+            self._vectors.upsert_article_embedding(article.id, article_vector)
 
         active_ids = [t.id for t in topics if t.active and t.id is not None]
         ranked = self._vectors.rank_topics_for_article(article.id, active_ids, top_k=3)

@@ -56,6 +56,29 @@ async def test_match_returns_top_topic_above_threshold():
 
 
 @pytest.mark.asyncio
+async def test_match_skips_embedding_when_vector_provided():
+    """When article_vector is precomputed, match() must NOT call embed/upsert.
+
+    Regression for the v2 pipeline double-embedding bug: pipeline batch-embeds
+    survivors before per-article matching, so passing the vector through avoids
+    a wasted embedding API call per article.
+    """
+    embeddings = AsyncMock()
+    embeddings.embed = AsyncMock(return_value=[0.99] * 1536)
+    vectors = MagicMock()
+    vectors.upsert_article_embedding = MagicMock()
+    vectors.rank_topics_for_article = MagicMock(return_value=[(1, 0.9)])
+
+    tm = TopicMatcher(embeddings, vectors, _settings_with_threshold(0.45))
+    precomputed = [0.1] * 1536
+    res = await tm.match(_article(), [_topic(1)], article_vector=precomputed)
+
+    embeddings.embed.assert_not_awaited()
+    vectors.upsert_article_embedding.assert_not_called()
+    assert res.chosen is not None and res.chosen.id == 1
+
+
+@pytest.mark.asyncio
 async def test_match_returns_none_when_below_threshold():
     embeddings = AsyncMock()
     embeddings.embed = AsyncMock(return_value=[0.1] * 1536)

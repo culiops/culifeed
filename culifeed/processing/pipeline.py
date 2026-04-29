@@ -1137,19 +1137,26 @@ class ProcessingPipeline:
         except Exception as e:
             self.logger.error(f"Article embedding batch failed: {e}", exc_info=True)
             return
+        article_vectors: dict[str, list[float]] = {}
         for (article, _), vec in zip(survivors, vecs):
             try:
                 self._vector_store.upsert_article_embedding(article.id, vec)
+                article_vectors[article.id] = vec
             except Exception as e:
                 self.logger.warning(
                     f"Failed to upsert article embedding for {article.id}: {e}"
                 )
 
-        # Stage 3: per-article match
+        # Stage 3: per-article match (reuse precomputed vectors to avoid
+        # re-embedding inside TopicMatcher.match)
         matches = []
         for article, _ in survivors:
             try:
-                match = await self._topic_matcher.match(article, topics)
+                match = await self._topic_matcher.match(
+                    article,
+                    topics,
+                    article_vector=article_vectors.get(article.id),
+                )
             except Exception as e:
                 self.logger.warning(f"Match failed for article {article.id}: {e}")
                 from .topic_matcher import MatchResult
