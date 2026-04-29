@@ -17,6 +17,8 @@ from queue import Queue, Empty
 
 import sqlite_vec
 
+from culifeed.utils.exceptions import CuliFeedError, ErrorCode
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,11 +63,15 @@ class DatabaseConnection:
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
-        except Exception as e:
-            from culifeed.utils.exceptions import CuliFeedError, ErrorCode
+        except (sqlite3.Error, OSError, AttributeError) as e:
+            logger.error(
+                "sqlite-vec extension failed to load",
+                exc_info=True,
+                extra={"db_path": str(self.db_path)},
+            )
+            # TODO(A2): replace with ErrorCode.VECTOR_STORE_UNAVAILABLE once added
             raise CuliFeedError(
                 "sqlite-vec extension failed to load",
-                # TODO(A2): replace with ErrorCode.VECTOR_STORE_UNAVAILABLE once added
                 error_code=ErrorCode.DATABASE_CONNECTION,
             ) from e
 
