@@ -1051,26 +1051,14 @@ class ProcessingPipeline:
 
         # Lazy-create heavy services so that v1 callers without an OpenAI
         # key never hit them.
-        if self._embedding_service is None:
-            from ..ai.embedding_service import EmbeddingService
-
-            self._embedding_service = EmbeddingService(
-                api_key=self.settings.ai.openai_api_key,
-                model=self.settings.filtering.embedding_model,
-            )
-        if self._topic_matcher is None:
-            self._topic_matcher = TopicMatcher(
-                self._embedding_service, self._vector_store, self.settings
-            )
-        if self._llm_gate is None:
-            self._llm_gate = LLMGate(self.ai_manager)
+        self._ensure_v2_services()
 
         # Stage 0: ensure topic embeddings up to date and persist any
         # signature changes back to the topics table.
         await self._topic_matcher.ensure_topic_embeddings(topics)
         self._persist_topic_signatures(topics)
 
-        # Stage 1: pre-filter
+        # Stage 1: pre-filter using articles that have no processing result yet
         articles = self._get_unprocessed_articles(chat_id)
         if not articles:
             self.logger.info(f"No unprocessed articles for channel {chat_id} (v2)")
@@ -1087,6 +1075,61 @@ class ProcessingPipeline:
             )
             return
 
+        await self._process_articles_v2(chat_id, topics, survivors)
+
+        # Stage 5: prune stale article embeddings beyond the retention window.
+        pruned = self._vector_store.prune_articles_older_than(
+            self.settings.filtering.embedding_retention_days
+        )
+        if pruned:
+            self.logger.info(f"Pruned {pruned} stale article embedding(s)")
+
+    def _ensure_v2_services(self) -> None:
+        """Lazy-create v2 pipeline services (embedding, matcher, gate).
+
+        Safe to call multiple times — a no-op after first initialisation.
+        Separated from _process_channel_v2 so the backfill script can reuse
+        the same wiring without duplicating service-creation logic.
+        """
+        if self._embedding_service is None:
+            from ..ai.embedding_service import EmbeddingService
+
+            self._embedding_service = EmbeddingService(
+                api_key=self.settings.ai.openai_api_key,
+                model=self.settings.filtering.embedding_model,
+            )
+        if self._topic_matcher is None:
+            self._topic_matcher = TopicMatcher(
+                self._embedding_service, self._vector_store, self.settings
+            )
+        if self._llm_gate is None:
+            self._llm_gate = LLMGate(self.ai_manager)
+
+    async def _process_articles_v2(
+        self,
+        chat_id: str,
+        topics: List[Topic],
+        survivors: List[Tuple[Article, float]],
+        *,
+        mark_delivered: bool = False,
+    ) -> None:
+        """Run v2 embedding + LLM-gate stages on an explicit article list.
+
+        This is the factored-out body of _process_channel_v2's stages 2-4.
+        Callers supply a pre-built ``survivors`` list of (article, pre_filter_score)
+        pairs so they can control which articles are fed in (e.g. the backfill
+        script bypasses _get_unprocessed_articles and builds its own list).
+
+        Args:
+            chat_id: Channel chat ID used for persisting results.
+            topics: Active topics for the channel (already have embeddings).
+            survivors: Articles that passed pre-filtering, paired with their
+                best pre-filter score.
+            mark_delivered: When True the persisted rows are written with
+                delivered=1 so they do not trigger Telegram delivery.  Used
+                by the backfill script to suppress re-delivery of historical
+                articles.
+        """
         # Stage 2: batch-embed survivors and upsert
         article_texts = [self._topic_matcher._article_text(a) for a, _ in survivors]
         try:
@@ -1102,23 +1145,19 @@ class ProcessingPipeline:
                     f"Failed to upsert article embedding for {article.id}: {e}"
                 )
 
-        # Stage 3: per-article match (already-embedded; match() will re-embed
-        # but that is a no-op cost in tests with mocks; production deploys
-        # may optimise this in a follow-up).
+        # Stage 3: per-article match
         matches = []
         for article, _ in survivors:
             try:
                 match = await self._topic_matcher.match(article, topics)
             except Exception as e:
                 self.logger.warning(f"Match failed for article {article.id}: {e}")
-                # Synthesize empty match
                 from .topic_matcher import MatchResult
 
                 match = MatchResult(article_id=article.id)
             matches.append(match)
 
-        # Stage 4: LLM gate per article (skip when no chosen topic). Errors
-        # are isolated per article — one provider crash must not kill the run.
+        # Stage 4: LLM gate per article
         for (article, pf_score), match in zip(survivors, matches):
             gate_result = None
             gate_error: Optional[str] = None
@@ -1137,14 +1176,8 @@ class ProcessingPipeline:
                 gate_result=gate_result,
                 pre_filter_score=pf_score,
                 gate_error=gate_error,
+                mark_delivered=mark_delivered,
             )
-
-        # Stage 5: prune stale article embeddings beyond the retention window.
-        pruned = self._vector_store.prune_articles_older_than(
-            self.settings.filtering.embedding_retention_days
-        )
-        if pruned:
-            self.logger.info(f"Pruned {pruned} stale article embedding(s)")
 
     def _persist_topic_signatures(self, topics: List[Topic]) -> None:
         """Write back any embedding_signature updates from TopicMatcher."""
@@ -1168,6 +1201,7 @@ class ProcessingPipeline:
         gate_result,  # Optional[GateResult]
         pre_filter_score: float,
         gate_error: Optional[str] = None,
+        mark_delivered: bool = False,
     ) -> None:
         """Persist one v2 processing result row.
 
@@ -1176,6 +1210,11 @@ class ProcessingPipeline:
         llm_reasoning, and pipeline_version='v2'. ai_relevance_score and
         confidence_score are mirrored from the embedding/gate values so v1
         consumers (delivery scheduler) keep working.
+
+        Args:
+            mark_delivered: When True the row is written with delivered=1 so
+                it is excluded from Telegram delivery.  Used by the backfill
+                script to prevent re-sending already-seen articles.
         """
         import json as _json
 
@@ -1200,6 +1239,8 @@ class ProcessingPipeline:
             confidence = 0.0
             reasoning = "no chosen topic" if match.chosen is None else ""
 
+        delivered_value = 1 if mark_delivered else 0
+
         with self.db.get_connection() as conn:
             conn.execute(
                 """
@@ -1207,8 +1248,8 @@ class ProcessingPipeline:
                     article_id, chat_id, topic_name,
                     pre_filter_score, embedding_score, embedding_top_topics,
                     ai_relevance_score, confidence_score,
-                    llm_decision, llm_reasoning, pipeline_version
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2')
+                    llm_decision, llm_reasoning, pipeline_version, delivered
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2', ?)
                 ON CONFLICT(article_id, chat_id, topic_name, pipeline_version)
                 DO NOTHING
                 """,
@@ -1223,6 +1264,7 @@ class ProcessingPipeline:
                     confidence,
                     decision,
                     reasoning,
+                    delivered_value,
                 ),
             )
             conn.commit()
