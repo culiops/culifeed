@@ -721,6 +721,16 @@ def daily_process(dry_run):
 
 
 @cli.command()
+@click.argument("article_id")
+@click.option("--db", required=True, help="Path to SQLite database file")
+def diagnose(article_id, db):
+    """Print full diagnostic chain for an article (scores, LLM decision, top topics)."""
+    from culifeed.cli.diagnose import diagnose as _diagnose
+
+    _diagnose(db_path=db, article_id=article_id)
+
+
+@cli.command()
 def start_bot():
     """Start Telegram bot service."""
     console.print("[bold blue]🤖 Starting Telegram Bot Service[/bold blue]")
