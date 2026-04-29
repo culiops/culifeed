@@ -275,5 +275,4 @@ test_outputs/
 *.prof
 *.pstats
 profile_output/
-scripts/*.py
 coverage.json
