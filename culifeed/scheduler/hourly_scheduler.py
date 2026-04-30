@@ -29,6 +29,7 @@ from ..utils.exceptions import CuliFeedError
 from ..processing.pipeline import ProcessingPipeline
 from ..database.connection import get_db_manager
 from ..delivery.message_sender import MessageSender
+from .quiet_hours import in_quiet_hours
 from telegram import Bot
 
 
@@ -301,40 +302,47 @@ class HourlyScheduler:
             delivery_start = time.time()
 
             if not dry_run and processing_result.articles_ready_for_ai > 0:
-                try:
-                    digest_result = await self.message_sender.deliver_daily_digest(
-                        channel["chat_id"],
-                        self.settings.processing.max_articles_per_topic,
+                if self._is_delivery_quiet():
+                    self.logger.info(
+                        f"delivery skipped (quiet hours) for {channel['chat_id']}; "
+                        f"results queued via delivered=0"
                     )
-                    messages_sent = (
-                        digest_result.messages_sent if digest_result.success else 0
-                    )
-
-                    # Update delivery metrics in processing_result
-                    processing_result.articles_sent_to_telegram = (
-                        digest_result.articles_delivered if digest_result.success else 0
-                    )
-                    processing_result.telegram_messages_sent = messages_sent
-                    processing_result.telegram_delivery_failures = (
-                        1 if not digest_result.success else 0
-                    )
-                    processing_result.delivery_time_seconds = (
-                        time.time() - delivery_start
-                    )
-
-                    if not digest_result.success:
-                        self.logger.warning(
-                            f"Digest sending failed for {channel['chat_id']}: {digest_result.error}"
+                    processing_result.delivery_time_seconds = time.time() - delivery_start
+                else:
+                    try:
+                        digest_result = await self.message_sender.deliver_daily_digest(
+                            channel["chat_id"],
+                            self.settings.processing.max_articles_per_topic,
+                        )
+                        messages_sent = (
+                            digest_result.messages_sent if digest_result.success else 0
                         )
 
-                except Exception as e:
-                    self.logger.error(
-                        f"Digest sending error for {channel['chat_id']}: {e}"
-                    )
-                    processing_result.telegram_delivery_failures = 1
-                    processing_result.delivery_time_seconds = (
-                        time.time() - delivery_start
-                    )
+                        # Update delivery metrics in processing_result
+                        processing_result.articles_sent_to_telegram = (
+                            digest_result.articles_delivered if digest_result.success else 0
+                        )
+                        processing_result.telegram_messages_sent = messages_sent
+                        processing_result.telegram_delivery_failures = (
+                            1 if not digest_result.success else 0
+                        )
+                        processing_result.delivery_time_seconds = (
+                            time.time() - delivery_start
+                        )
+
+                        if not digest_result.success:
+                            self.logger.warning(
+                                f"Digest sending failed for {channel['chat_id']}: {digest_result.error}"
+                            )
+
+                    except Exception as e:
+                        self.logger.error(
+                            f"Digest sending error for {channel['chat_id']}: {e}"
+                        )
+                        processing_result.telegram_delivery_failures = 1
+                        processing_result.delivery_time_seconds = (
+                            time.time() - delivery_start
+                        )
             else:
                 processing_result.delivery_time_seconds = time.time() - delivery_start
 
@@ -405,6 +413,14 @@ class HourlyScheduler:
                 "messages_sent": 0,
                 "processing_time": processing_time,
             }
+
+    def _is_delivery_quiet(self) -> bool:
+        """True if delivery should be suppressed at the current wall-clock hour."""
+        return in_quiet_hours(
+            datetime.now(),
+            self.settings.processing.quiet_hours_start,
+            self.settings.processing.quiet_hours_end,
+        )
 
     async def _post_processing_cleanup(self) -> None:
         """Perform cleanup tasks after processing."""
