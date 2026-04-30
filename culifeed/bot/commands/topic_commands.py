@@ -28,6 +28,7 @@ from ...config.settings import get_settings
 from ...ai.ai_manager import AIManager
 from ...utils.exceptions import TelegramError, ErrorCode, AIError
 from ...processing.topic_description_generator import TopicDescriptionGenerator
+from ..message_utils import reply_long
 
 
 class TopicCommandHandler:
@@ -100,7 +101,7 @@ class TopicCommandHandler:
             if topics:
                 message += "\n💡 Use `/addtopic` to add more or `/removetopic` to remove."
 
-            await update.message.reply_text(message, parse_mode="Markdown")
+            await reply_long(update, message, parse_mode="Markdown")
 
         except Exception as e:
             await self._handle_error(update, "list topics", e)

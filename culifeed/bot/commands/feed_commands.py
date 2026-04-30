@@ -28,6 +28,7 @@ from ...storage.feed_repository import FeedRepository
 from ...utils.logging import get_logger_for_component
 from ...utils.validators import URLValidator, ValidationError
 from ...utils.exceptions import TelegramError, FeedError, ErrorCode
+from ..message_utils import reply_long
 
 
 class FeedCommandHandler:
@@ -113,7 +114,7 @@ class FeedCommandHandler:
 
                 message += "\n\n💡 Use `/testfeed <url>` to check feed status."
 
-            await update.message.reply_text(message, parse_mode="Markdown")
+            await reply_long(update, message, parse_mode="Markdown")
 
         except Exception as e:
             await self._handle_error(update, "list feeds", e)
