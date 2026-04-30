@@ -48,8 +48,17 @@ class LogLevel(str, Enum):
 class ProcessingSettings(BaseModel):
     """Processing pipeline configuration."""
 
-    daily_run_hour: int = Field(
-        default=8, ge=0, le=23, description="Hour of day to run processing (0-23)"
+    processing_interval_hours: int = Field(
+        default=1, ge=1, le=24,
+        description="Hours between processing runs (1-24)",
+    )
+    quiet_hours_start: int = Field(
+        default=22, ge=0, le=23,
+        description="Hour delivery starts being suppressed (0-23)",
+    )
+    quiet_hours_end: int = Field(
+        default=7, ge=0, le=23,
+        description="Hour delivery resumes (0-23). If equal to start, no quiet hours.",
     )
     max_articles_per_topic: int = Field(
         default=5, ge=1, le=20, description="Maximum articles to deliver per topic"
@@ -82,14 +91,10 @@ class ProcessingSettings(BaseModel):
         le=1.0,
         description="Minimum AI relevance score to generate summary",
     )
-
-    @field_validator("daily_run_hour")
-    @classmethod
-    def validate_hour(cls, v):
-        """Ensure hour is valid."""
-        if not (0 <= v <= 23):
-            raise ValueError("daily_run_hour must be between 0 and 23")
-        return v
+    max_ai_calls_per_run: int = Field(
+        default=50, ge=1, le=500,
+        description="Hard cap on AI calls per scheduler run",
+    )
 
 
 # Trust validation settings removed for simplification
@@ -1017,6 +1022,18 @@ def load_settings(config_path: Optional[str] = None) -> CuliFeedSettings:
 # Global settings instance
 _settings: Optional[CuliFeedSettings] = None
 
+_DEPRECATED_ENV = "CULIFEED_PROCESSING__DAILY_RUN_HOUR"
+_deprecation_warned = False
+
+
+def _warn_deprecated_env_once() -> None:
+    if os.getenv(_DEPRECATED_ENV) is not None:
+        import logging
+        logging.getLogger("culifeed.settings").warning(
+            f"{_DEPRECATED_ENV} is deprecated and ignored. "
+            f"Use CULIFEED_PROCESSING__PROCESSING_INTERVAL_HOURS instead."
+        )
+
 
 def get_settings(reload: bool = False) -> CuliFeedSettings:
     """Get global settings instance (singleton pattern).
@@ -1027,7 +1044,11 @@ def get_settings(reload: bool = False) -> CuliFeedSettings:
     Returns:
         Global settings instance
     """
-    global _settings
+    global _settings, _deprecation_warned
+
+    if not _deprecation_warned:
+        _warn_deprecated_env_once()
+        _deprecation_warned = True
 
     if _settings is None or reload:
         _settings = load_settings()

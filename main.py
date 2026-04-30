@@ -795,7 +795,7 @@ def _check_ai_config(settings) -> tuple[bool, str]:
 def _check_processing_config(settings) -> tuple[bool, str]:
     """Check processing configuration."""
     try:
-        return True, f"Hour: {settings.processing.daily_run_hour}, Max articles: {settings.processing.max_articles_per_topic}"
+        return True, f"Interval: every {settings.processing.processing_interval_hours}h, Max articles: {settings.processing.max_articles_per_topic}"
     except Exception as e:
         return False, str(e)
 

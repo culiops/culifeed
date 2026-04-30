@@ -63,7 +63,7 @@ class TestEndToEndIntegration:
             settings.database.cleanup_days = 30
             settings.database.max_size_mb = 100
 
-            settings.processing.daily_run_hour = 8
+            settings.processing.processing_interval_hours = 1
             settings.processing.max_articles_per_topic = 10
             settings.processing.ai_provider = "gemini"
 
@@ -414,7 +414,7 @@ class TestEndToEndIntegration:
 
         # Test settings loading
         assert test_settings.database.path is not None
-        assert test_settings.processing.daily_run_hour == 8
+        assert test_settings.processing.processing_interval_hours == 1
         assert test_settings.processing.max_articles_per_topic == 10
 
         # Test AI provider configuration
@@ -515,7 +515,7 @@ async def test_complete_workflow_simulation():
             settings.database.path = str(db_path)
             settings.database.cleanup_days = 30
             settings.database.max_size_mb = 500  # Add the missing attribute
-            settings.processing.daily_run_hour = 8
+            settings.processing.processing_interval_hours = 1
             settings.processing.max_articles_per_topic = 5
             settings.telegram.bot_token = None  # No bot for test
             settings.get_ai_fallback_providers.return_value = ["gemini"]
