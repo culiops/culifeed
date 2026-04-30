@@ -246,7 +246,7 @@ python -m pytest tests/integration/test_bot_integration.py -v
 #### Day 29-30: Component Integration
 **Files to Create**:
 ```
-culifeed/scheduler/daily_scheduler.py   # Cron coordination
+culifeed/scheduler/hourly_scheduler.py  # Hourly run coordination
 main.py                                 # Updated entry point
 tests/integration/test_end_to_end.py    # E2E tests
 ```

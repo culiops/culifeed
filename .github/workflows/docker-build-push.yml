@@ -101,7 +101,7 @@ jobs:
         # Test 3: Entry points exist
         echo "📋 Test 3: Service entry points"
         docker run --rm --entrypoint="" culifeed-test:${{ matrix.variant.name }} \
-          sh -c 'test -f /app/run_bot.py && test -f /app/run_daily_scheduler.py && echo "✅ Entry points exist"'
+          sh -c 'test -f /app/run_bot.py && test -f /app/run_scheduler.py && echo "✅ Entry points exist"'
 
         # Test 4: Configuration validation
         echo "📋 Test 4: Configuration validation"

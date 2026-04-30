@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from culifeed.config.settings import get_settings
 from culifeed.database.connection import get_db_manager
 from culifeed.database.schema import DatabaseSchema
-from culifeed.scheduler.daily_scheduler import DailyScheduler
+from culifeed.scheduler.hourly_scheduler import HourlyScheduler
 from culifeed.storage.channel_repository import ChannelRepository
 from culifeed.storage.feed_repository import FeedRepository
 
@@ -63,7 +63,7 @@ class TestEndToEndIntegration:
             settings.database.cleanup_days = 30
             settings.database.max_size_mb = 100
 
-            settings.processing.daily_run_hour = 8
+            settings.processing.processing_interval_hours = 1
             settings.processing.max_articles_per_topic = 10
             settings.processing.ai_provider = "gemini"
 
@@ -254,7 +254,7 @@ class TestEndToEndIntegration:
     @pytest.mark.asyncio
     async def test_scheduler_health_check(self, test_settings, populated_database):
         """Test scheduler health monitoring functionality."""
-        scheduler = DailyScheduler(test_settings)
+        scheduler = HourlyScheduler(test_settings)
 
         # Test health status check
         status = await scheduler.check_processing_status()
@@ -272,7 +272,7 @@ class TestEndToEndIntegration:
         """Test complete daily processing workflow in dry-run mode."""
 
         # Run scheduler in dry run mode to avoid external dependencies
-        scheduler = DailyScheduler(test_settings)
+        scheduler = HourlyScheduler(test_settings)
 
         # Mock the pipeline.process_channel method to avoid AI API calls
         from unittest.mock import AsyncMock, MagicMock
@@ -342,7 +342,7 @@ class TestEndToEndIntegration:
     async def test_error_handling_integration(self, test_settings, populated_database):
         """Test error handling across the integrated system."""
 
-        scheduler = DailyScheduler(test_settings)
+        scheduler = HourlyScheduler(test_settings)
 
         # Test with database error simulation
         with patch.object(
@@ -376,7 +376,7 @@ class TestEndToEndIntegration:
     async def test_performance_monitoring(self, test_settings, populated_database):
         """Test performance monitoring integration."""
 
-        scheduler = DailyScheduler(test_settings)
+        scheduler = HourlyScheduler(test_settings)
 
         # Mock successful processing
         from unittest.mock import AsyncMock, MagicMock
@@ -414,7 +414,7 @@ class TestEndToEndIntegration:
 
         # Test settings loading
         assert test_settings.database.path is not None
-        assert test_settings.processing.daily_run_hour == 8
+        assert test_settings.processing.processing_interval_hours == 1
         assert test_settings.processing.max_articles_per_topic == 10
 
         # Test AI provider configuration
@@ -427,7 +427,7 @@ class TestEndToEndIntegration:
         """Test processing multiple channels simultaneously."""
 
         # Run processing
-        scheduler = DailyScheduler(test_settings)
+        scheduler = HourlyScheduler(test_settings)
 
         # Mock pipeline to simulate successful processing
         from unittest.mock import AsyncMock, MagicMock
@@ -475,7 +475,7 @@ class TestEndToEndIntegration:
                 ),
             )
 
-        scheduler = DailyScheduler(test_settings)
+        scheduler = HourlyScheduler(test_settings)
 
         # Test cleanup operations
         await scheduler._post_processing_cleanup()
@@ -515,7 +515,7 @@ async def test_complete_workflow_simulation():
             settings.database.path = str(db_path)
             settings.database.cleanup_days = 30
             settings.database.max_size_mb = 500  # Add the missing attribute
-            settings.processing.daily_run_hour = 8
+            settings.processing.processing_interval_hours = 1
             settings.processing.max_articles_per_topic = 5
             settings.telegram.bot_token = None  # No bot for test
             settings.get_ai_fallback_providers.return_value = ["gemini"]
@@ -552,7 +552,7 @@ async def test_complete_workflow_simulation():
             db_manager = get_db_manager(str(db_path))
 
             # Create scheduler and mock external dependencies
-            scheduler = DailyScheduler(settings)
+            scheduler = HourlyScheduler(settings)
 
             # Mock the pipeline to avoid external API calls
             from unittest.mock import AsyncMock, MagicMock

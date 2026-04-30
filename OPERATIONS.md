@@ -11,6 +11,12 @@ docker compose up -d --build
 
 ## Daily operations
 
+> **Schedule (2026-04-30):** the scheduler now runs hourly. Configure via
+> `CULIFEED_PROCESSING__PROCESSING_INTERVAL_HOURS` (default `1`). Delivery
+> is suppressed during quiet hours (`CULIFEED_PROCESSING__QUIET_HOURS_START`
+> and `..__QUIET_HOURS_END`, defaults `22` and `7`). The supervisord program
+> was renamed to `culifeed-scheduler`.
+
 | Action | Command |
 |---|---|
 | Pull latest code, restart processes | `git pull && docker compose restart` |
@@ -18,7 +24,7 @@ docker compose up -d --build
 | Tail logs (both services) | `docker compose logs -f` |
 | Tail bot only | `docker compose exec culifeed-prd tail -f /app/logs/bot.log` |
 | Restart only the bot | `docker compose exec culifeed-prd supervisorctl restart culifeed-bot` |
-| Restart only the daily scheduler | `docker compose exec culifeed-prd supervisorctl restart culifeed-daily` |
+| Restart only the hourly scheduler | `docker compose exec culifeed-prd supervisorctl restart culifeed-scheduler` |
 | Service status | `docker compose exec culifeed-prd supervisorctl status` |
 | Stop everything | `docker compose down` |
 | Open SQLite browser | `https://100.76.118.121:3001` (Tailscale) |

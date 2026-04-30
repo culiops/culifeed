@@ -308,7 +308,7 @@ When fixing or updating any logic code, follow this validation sequence:
 ```python
 # YAML base configuration
 processing:
-  daily_run_hour: 8
+  processing_interval_hours: 1
   ai_provider: ${AI_PROVIDER}  # Environment variable substitution
   
 # Environment variable override

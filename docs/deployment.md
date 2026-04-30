@@ -141,7 +141,9 @@ user:
   
 # Processing Settings  
 processing:
-  daily_run_hour: 8
+  processing_interval_hours: 1
+  quiet_hours_start: 22
+  quiet_hours_end: 7
   ai_provider: "gemini"  # Primary: gemini, fallback: groq
   max_articles_per_topic: 5
   
