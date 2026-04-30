@@ -1295,27 +1295,6 @@ class ProcessingPipeline:
             )
             conn.commit()
 
-    # ------------------------------------------------------------------
-
-    def _apply_ai_call_cap(self, candidates: list, cap: int) -> list:
-        """Truncate candidates to top-N by pre_filter_score; log on truncation.
-
-        Each candidate is expected to be a dict-like with a `pre_filter_score` field.
-        Items above the cap are not marked processed and will reappear next run.
-        """
-        if len(candidates) <= cap:
-            return candidates
-        deferred = len(candidates) - cap
-        self.logger.warning(
-            f"AI cost cap hit: processing top {cap} of {len(candidates)} candidates; "
-            f"{deferred} deferred to next run"
-        )
-        return sorted(
-            candidates,
-            key=lambda c: c["pre_filter_score"],
-            reverse=True,
-        )[:cap]
-
     def _create_empty_result(self, chat_id: str, errors: List[str]) -> PipelineResult:
         """Create empty pipeline result."""
         return self._create_result(

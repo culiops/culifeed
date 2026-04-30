@@ -4,7 +4,7 @@ CuliFeed Hourly Scheduler - Loop Coordination
 =============================================
 
 Orchestrates hourly processing workflow for content curation and delivery.
-Designed to be called by systemd timers or cron jobs.
+Driven by the long-running scheduler service (run_scheduler.py).
 
 Features:
 - Schedule coordination across multiple channels
@@ -27,7 +27,6 @@ from ..utils.logging import get_logger_for_component
 from ..utils.exceptions import CuliFeedError
 
 from ..processing.pipeline import ProcessingPipeline
-from ..database.connection import get_db_manager
 from ..delivery.message_sender import MessageSender
 from .quiet_hours import in_quiet_hours
 from telegram import Bot
@@ -35,10 +34,10 @@ from telegram import Bot
 
 class HourlyScheduler:
     """
-    Coordinates daily processing across all registered channels.
+    Coordinates scheduled processing across all registered channels.
 
-    This is the main entry point for scheduled processing, typically
-    invoked by systemd timers or cron jobs.
+    This is the main entry point for scheduled processing, driven by
+    the run_scheduler.py service loop on a configurable interval.
     """
 
     def __init__(self, settings=None):
@@ -59,7 +58,7 @@ class HourlyScheduler:
         )
 
         # Execution tracking
-        self.execution_id = f"daily_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.execution_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         self.start_time = None
         self.channels_processed = 0
         self.total_articles_processed = 0
