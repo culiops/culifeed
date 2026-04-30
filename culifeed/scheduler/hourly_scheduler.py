@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-CuliFeed Daily Scheduler - Cron Coordination
-==========================================
+CuliFeed Hourly Scheduler - Loop Coordination
+=============================================
 
-Orchestrates daily processing workflow for content curation and delivery.
+Orchestrates hourly processing workflow for content curation and delivery.
 Designed to be called by systemd timers or cron jobs.
 
 Features:
@@ -32,7 +32,7 @@ from ..delivery.message_sender import MessageSender
 from telegram import Bot
 
 
-class DailyScheduler:
+class HourlyScheduler:
     """
     Coordinates daily processing across all registered channels.
 

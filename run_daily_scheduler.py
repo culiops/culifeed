@@ -17,17 +17,17 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from culifeed.scheduler.daily_scheduler import DailyScheduler
+from culifeed.scheduler.hourly_scheduler import HourlyScheduler
 from culifeed.config.settings import get_settings
 from culifeed.utils.logging import setup_logger
 
 
-class DailySchedulerService:
+class HourlySchedulerService:
     """
-    Service wrapper for DailyScheduler that handles continuous operation.
+    Service wrapper for HourlyScheduler that handles continuous operation.
     """
     
-    def __init__(self, scheduler: DailyScheduler):
+    def __init__(self, scheduler: HourlyScheduler):
         self.scheduler = scheduler
         self.settings = get_settings()
         self.logger = setup_logger(
@@ -115,7 +115,7 @@ async def main():
 
     try:
         # Initialize scheduler
-        scheduler = DailyScheduler()
+        scheduler = HourlyScheduler()
         
         if args.check_status:
             # Status check mode
@@ -135,7 +135,7 @@ async def main():
             print(f"📅 Scheduled to run daily at {settings.processing.daily_run_hour}:00")
             print("Press Ctrl+C to stop.")
             
-            service = DailySchedulerService(scheduler)
+            service = HourlySchedulerService(scheduler)
             await service.run_service()
             
         else:

@@ -544,15 +544,15 @@ def full_test(channels, dry_run):
     
     async def run_full_test():
         try:
-            from culifeed.scheduler.daily_scheduler import DailyScheduler
+            from culifeed.scheduler.hourly_scheduler import HourlyScheduler
             
-            scheduler = DailyScheduler()
+            scheduler = HourlyScheduler()
             
             if channels:
                 # Test specific channels
                 channel_list = [ch.strip() for ch in channels.split(',')]
                 console.print(f"🎯 Testing specific channels: {channel_list}")
-                # Note: This would require enhancing DailyScheduler to accept specific channels
+                # Note: This would require enhancing HourlyScheduler to accept specific channels
                 console.print("[yellow]⚠️ Specific channel testing will use full processing for now[/yellow]")
             
             console.print(f"🔄 Starting full system test (dry_run: {dry_run})")
@@ -606,9 +606,9 @@ def health_check():
     
     async def run_health_check():
         try:
-            from culifeed.scheduler.daily_scheduler import DailyScheduler
+            from culifeed.scheduler.hourly_scheduler import HourlyScheduler
             
-            scheduler = DailyScheduler()
+            scheduler = HourlyScheduler()
             status = await scheduler.check_processing_status()
             
             # Display health status
@@ -688,9 +688,9 @@ def daily_process(dry_run):
     
     async def run_daily():
         try:
-            from culifeed.scheduler.daily_scheduler import DailyScheduler
+            from culifeed.scheduler.hourly_scheduler import HourlyScheduler
             
-            scheduler = DailyScheduler()
+            scheduler = HourlyScheduler()
             console.print(f"🔄 Starting daily processing (dry_run: {dry_run})")
             
             result = await scheduler.run_daily_processing(dry_run=dry_run)
