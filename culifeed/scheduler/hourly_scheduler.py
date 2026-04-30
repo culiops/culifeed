@@ -76,11 +76,11 @@ class HourlyScheduler:
         """
         self.start_time = datetime.now()
         self.logger.info(
-            f"Starting daily processing",
+            f"Starting scheduled processing",
             extra={
                 "execution_id": self.execution_id,
                 "dry_run": dry_run,
-                "scheduled_hour": self.settings.processing.daily_run_hour,
+                "interval_hours": self.settings.processing.processing_interval_hours,
             },
         )
 
