@@ -348,6 +348,25 @@ class ProcessingPipeline:
             # Step 9: AI Analysis and Processing
             # Only pass filter results that correspond to articles that passed pre-filter
             passed_filter_results = [r for r in filter_results if r.passed_filter]
+
+            # Cap AI calls per run to protect free-tier quotas. Articles above the cap
+            # remain unprocessed (their processing_results row is never written) so they
+            # appear as candidates again on the next run.
+            cap = self.settings.processing.max_ai_calls_per_run
+            if len(passed_articles) > cap:
+                deferred = len(passed_articles) - cap
+                self.logger.warning(
+                    f"AI cost cap hit: processing top {cap} of {len(passed_articles)} candidates; "
+                    f"{deferred} deferred to next run"
+                )
+                paired = sorted(
+                    zip(passed_articles, passed_filter_results),
+                    key=lambda p: p[1].best_match_score,
+                    reverse=True,
+                )[:cap]
+                passed_articles = [p[0] for p in paired]
+                passed_filter_results = [p[1] for p in paired]
+
             ai_processed_articles, ai_metrics = await self._ai_analysis_and_processing(
                 passed_articles, passed_filter_results, topics, max_articles_per_topic
             )
@@ -1277,6 +1296,25 @@ class ProcessingPipeline:
             conn.commit()
 
     # ------------------------------------------------------------------
+
+    def _apply_ai_call_cap(self, candidates: list, cap: int) -> list:
+        """Truncate candidates to top-N by pre_filter_score; log on truncation.
+
+        Each candidate is expected to be a dict-like with a `pre_filter_score` field.
+        Items above the cap are not marked processed and will reappear next run.
+        """
+        if len(candidates) <= cap:
+            return candidates
+        deferred = len(candidates) - cap
+        self.logger.warning(
+            f"AI cost cap hit: processing top {cap} of {len(candidates)} candidates; "
+            f"{deferred} deferred to next run"
+        )
+        return sorted(
+            candidates,
+            key=lambda c: c["pre_filter_score"],
+            reverse=True,
+        )[:cap]
 
     def _create_empty_result(self, chat_id: str, errors: List[str]) -> PipelineResult:
         """Create empty pipeline result."""
