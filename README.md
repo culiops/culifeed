@@ -151,7 +151,7 @@ docker logs culifeed
 
 # Restart services
 docker exec culifeed supervisorctl restart culifeed-bot
-docker exec culifeed supervisorctl restart culifeed-daily
+docker exec culifeed supervisorctl restart culifeed-scheduler
 ```
 
 ---
@@ -175,7 +175,7 @@ python main.py init-db
 
 # Run services (in separate terminals)
 python run_bot.py                        # Terminal 1: Bot
-python run_daily_scheduler.py --service  # Terminal 2: Scheduler
+python run_scheduler.py --service        # Terminal 2: Scheduler (hourly)
 ```
 
 ---
@@ -194,8 +194,8 @@ python main.py daily-process --dry-run   # Test processing pipeline
 python main.py show-feeds                # List all feeds
 
 # Manual operations
-python run_daily_scheduler.py --check-status  # Check processing status
-python run_daily_scheduler.py --dry-run       # Test daily processing
+python run_scheduler.py --check-status  # Check processing status
+python run_scheduler.py --dry-run       # Test processing
 ```
 
 ---
@@ -214,7 +214,7 @@ CULIFEED_LOGGING__LEVEL=DEBUG python run_bot.py
 ### No Content Being Delivered?
 1. **Check topics**: `/topics` - Make sure you have topics configured
 2. **Check feeds**: `/feeds` - Verify RSS feeds are working
-3. **Check processing**: `docker exec culifeed python run_daily_scheduler.py --check-status`
+3. **Check processing**: `docker exec culifeed python run_scheduler.py --check-status`
 
 ### Docker Issues?
 ```bash

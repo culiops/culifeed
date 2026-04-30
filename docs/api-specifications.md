@@ -420,6 +420,6 @@ user:
     
 processing:
   ai_provider: "gemini"  # Primary: gemini, fallback: groq
-  daily_run_hour: 8
+  processing_interval_hours: 1
   max_articles_per_topic: 5
 ```
