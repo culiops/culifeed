@@ -13,7 +13,10 @@ services:
       - .env.prd
     environment:
       - TZ=UTC
-      - CULIFEED_FILTERING__USE_EMBEDDING_PIPELINE=true
+      # Stopgap (R0 from cutover spec): on v1 while the v2 ingestion gap is fixed.
+      # _process_channel_v2 currently reads only existing DB rows; it does not fetch
+      # feeds. Flip back to true once feed ingestion is wired into the v2 path.
+      - CULIFEED_FILTERING__USE_EMBEDDING_PIPELINE=false
     volumes:
       - .:/app
       - ./data:/app/data
