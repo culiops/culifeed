@@ -31,12 +31,7 @@ class SchedulerService:
     def __init__(self, scheduler):
         self.scheduler = scheduler
         self.settings = get_settings()
-        self.logger = setup_logger(
-            name="culifeed.scheduler_service",
-            level=self.settings.logging.level.value,
-            log_file=self.settings.logging.file_path,
-            console=self.settings.logging.console_logging,
-        )
+        self.logger = logging.getLogger("culifeed.scheduler_service")
         self.running = True
         self.last_processed_at: datetime | None = None
 
@@ -98,13 +93,16 @@ async def main():
     # Load settings
     settings = get_settings()
 
-    # Setup logging
-    logger = setup_logger(
-        name="culifeed.scheduler_runner",
+    # Setup logging on the "culifeed" parent so all child loggers
+    # (culifeed.scheduler, culifeed.pipeline, culifeed.ai_manager, ...)
+    # inherit handlers via standard propagation.
+    setup_logger(
+        name="culifeed",
         level="DEBUG" if args.debug else settings.logging.level.value,
         log_file=settings.logging.file_path,
         console=settings.logging.console_logging
     )
+    logger = logging.getLogger("culifeed.scheduler_runner")
 
     logger.info("Starting CuliFeed Scheduler...")
 
