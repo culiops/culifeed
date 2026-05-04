@@ -1183,7 +1183,7 @@ class ProcessingPipeline:
                 match = MatchResult(article_id=article.id)
             matches.append(match)
 
-        # Stage 4: LLM gate per article
+        # Stage 4: LLM gate per article + AI summary on PASS
         for (article, pf_score), match in zip(survivors, matches):
             gate_result = None
             gate_error: Optional[str] = None
@@ -1195,6 +1195,24 @@ class ProcessingPipeline:
                         f"LLM gate failed for article {article.id}: {e}"
                     )
                     gate_error = str(e)
+
+            # Generate AI summary for articles that pass the gate so Telegram
+            # delivery renders the 🤖 line instead of the first-paragraph
+            # fallback. Failure here must not block persistence of the gate
+            # decision row.
+            summary_text: Optional[str] = None
+            summary_provider: Optional[str] = None
+            if gate_result is not None and gate_result.passed:
+                try:
+                    summary_result = await self.ai_manager.generate_summary(article)
+                    if summary_result and getattr(summary_result, "summary", None):
+                        summary_text = summary_result.summary
+                        summary_provider = summary_result.provider
+                except Exception as e:
+                    self.logger.warning(
+                        f"Summary generation failed for article {article.id}: {e}"
+                    )
+
             self._persist_v2_result(
                 article=article,
                 chat_id=chat_id,
@@ -1203,6 +1221,8 @@ class ProcessingPipeline:
                 pre_filter_score=pf_score,
                 gate_error=gate_error,
                 mark_delivered=mark_delivered,
+                summary=summary_text,
+                summary_provider=summary_provider,
             )
 
     def _persist_topic_signatures(self, topics: List[Topic]) -> None:
@@ -1228,6 +1248,8 @@ class ProcessingPipeline:
         pre_filter_score: float,
         gate_error: Optional[str] = None,
         mark_delivered: bool = False,
+        summary: Optional[str] = None,
+        summary_provider: Optional[str] = None,
     ) -> None:
         """Persist one v2 processing result row.
 
@@ -1274,10 +1296,12 @@ class ProcessingPipeline:
                     article_id, chat_id, topic_name,
                     pre_filter_score, embedding_score, embedding_top_topics,
                     ai_relevance_score, confidence_score,
-                    llm_decision, llm_reasoning, pipeline_version, delivered
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2', ?)
+                    llm_decision, llm_reasoning, pipeline_version, delivered,
+                    summary
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'v2', ?, ?)
                 ON CONFLICT(article_id, chat_id, topic_name, pipeline_version)
-                DO NOTHING
+                DO UPDATE SET summary = excluded.summary
+                    WHERE excluded.summary IS NOT NULL
                 """,
                 (
                     article.id,
@@ -1291,8 +1315,37 @@ class ProcessingPipeline:
                     decision,
                     reasoning,
                     delivered_value,
+                    summary,
                 ),
             )
+
+            # When the gate passed and summary generation succeeded, mirror
+            # the result onto the articles row so delivery's `SELECT a.*`
+            # picks up summary + ai_provider (the latter drives the 🤖
+            # indicator in digest_formatter.py). Both ai_relevance_score
+            # and ai_confidence receive the gate confidence — v2 has only
+            # one signal (the gate's binary pass + confidence), unlike v1
+            # which has separate relevance and confidence scores.
+            if summary is not None:
+                conn.execute(
+                    """
+                    UPDATE articles
+                    SET summary = ?,
+                        ai_provider = ?,
+                        ai_relevance_score = ?,
+                        ai_confidence = ?,
+                        ai_reasoning = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        summary,
+                        summary_provider or "v2_llm_gate",
+                        confidence,
+                        confidence,
+                        reasoning,
+                        article.id,
+                    ),
+                )
             conn.commit()
 
     def _create_empty_result(self, chat_id: str, errors: List[str]) -> PipelineResult:

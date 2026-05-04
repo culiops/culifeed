@@ -78,8 +78,13 @@ def _make_stub_embedding_service():
     return svc
 
 
-def _make_stub_ai_manager():
-    """Return a MagicMock AIManager whose complete() always returns PASS."""
+def _make_stub_ai_manager(summary_text: str = "STUB SUMMARY",
+                         summary_provider: str = "stub-provider"):
+    """Return a MagicMock AIManager whose complete() always returns PASS.
+
+    generate_summary() returns an AIResult populated with the provided
+    summary_text and summary_provider.
+    """
 
     pass_response = MagicMock()
     pass_response.success = True
@@ -91,13 +96,19 @@ def _make_stub_ai_manager():
     mgr = MagicMock()
     mgr.complete = AsyncMock(return_value=pass_response)
 
-    # analyze_relevance and generate_summary are not called in the v2 path but
-    # guard against accidental invocations reaching real providers.
     from culifeed.ai.providers.base import AIResult
     mgr.analyze_relevance = AsyncMock(
         return_value=AIResult(success=False, relevance_score=0.0, confidence=0.0)
     )
-    mgr.generate_summary = AsyncMock(return_value=None)
+    mgr.generate_summary = AsyncMock(
+        return_value=AIResult(
+            success=True,
+            relevance_score=0.0,
+            confidence=0.0,
+            summary=summary_text,
+            provider=summary_provider,
+        )
+    )
     return mgr
 
 
@@ -121,8 +132,11 @@ def _seed_feed_and_topic(db_path: Path) -> None:
 
     Remediation:
     1. Clear the stale v1 processing_results so articles appear unprocessed.
-    2. Insert a feed row linking FEED_URL to CHAT_ID.
-    3. Insert one active topic whose keyword ("title") matches every
+    2. Refresh article created_at timestamps to 'now' so the -2 day recency
+       window in _get_unprocessed_articles doesn't exclude snapshot rows that
+       may be older than 2 days when the test is run.
+    3. Insert a feed row linking FEED_URL to CHAT_ID.
+    4. Insert one active topic whose keyword ("title") matches every
        "Title N" article in the snapshot.
     """
     conn = sqlite3.connect(str(db_path))
@@ -132,6 +146,11 @@ def _seed_feed_and_topic(db_path: Path) -> None:
         # rows would still block _get_unprocessed_articles (pr.article_id IS
         # NULL filter).  Clearing them is safe because this is a test copy.
         conn.execute("DELETE FROM processing_results")
+
+        # Refresh created_at so the -2 day recency filter in
+        # _get_unprocessed_articles always lets snapshot articles through,
+        # regardless of when the test is run.
+        conn.execute("UPDATE articles SET created_at = datetime('now')")
 
         # Feed: binds FEED_URL to CHAT_ID so _get_unprocessed_articles JOIN works
         conn.execute(
@@ -171,7 +190,7 @@ def _seed_feed_and_topic(db_path: Path) -> None:
     reason=f"Production snapshot not found at {SNAPSHOT_PATH}",
 )
 @pytest.mark.asyncio
-async def test_v2_pipeline_against_snapshot(snapshot_db, tmp_path):
+async def test_v2_pipeline_against_snapshot(snapshot_db):
     """Run the v2 embedding pipeline against a prod snapshot copy.
 
     Asserts:
@@ -284,4 +303,114 @@ async def test_v2_pipeline_against_snapshot(snapshot_db, tmp_path):
     print(
         f"\n[smoke] v2 rows written: {len(rows)}, "
         f"decision breakdown: {decisions}"
+    )
+
+
+@pytest.mark.skipif(
+    not SNAPSHOT_PATH.exists(),
+    reason=f"Production snapshot not found at {SNAPSHOT_PATH}",
+)
+@pytest.mark.asyncio
+async def test_v2_pipeline_generates_summaries(snapshot_db):
+    """v2 must call generate_summary for PASS articles and persist the summary
+    in both processing_results.summary and articles.summary, with ai_provider
+    set so delivery renders the 🤖 indicator.
+    """
+    import copy
+    from culifeed.database.schema import DatabaseSchema
+    from culifeed.config.settings import get_settings
+    from culifeed.database.connection import DatabaseConnection
+    from culifeed.processing.pipeline import ProcessingPipeline
+
+    schema = DatabaseSchema(str(snapshot_db))
+    schema.create_tables()
+    _seed_feed_and_topic(snapshot_db)
+
+    settings = copy.deepcopy(get_settings())
+    settings.filtering.use_embedding_pipeline = True
+    settings.ai.openai_api_key = "test-dummy-key"
+
+    db = DatabaseConnection(str(snapshot_db), pool_size=2)
+
+    stub_embedding = _make_stub_embedding_service()
+    stub_ai = _make_stub_ai_manager(
+        summary_text="STUB SUMMARY", summary_provider="stub-provider"
+    )
+
+    pipeline = ProcessingPipeline(
+        db_connection=db,
+        settings=settings,
+        ai_manager=stub_ai,
+        embedding_service=stub_embedding,
+    )
+
+    await pipeline.process_channel(CHAT_ID)
+
+    # Inspect database
+    conn = sqlite3.connect(str(snapshot_db))
+    conn.row_factory = sqlite3.Row
+    try:
+        pass_rows = conn.execute(
+            "SELECT * FROM processing_results "
+            "WHERE pipeline_version='v2' AND llm_decision='pass'"
+        ).fetchall()
+        non_pass_rows = conn.execute(
+            "SELECT * FROM processing_results "
+            "WHERE pipeline_version='v2' AND llm_decision != 'pass'"
+        ).fetchall()
+
+        # Stub returns PASS at confidence 0.9 for every article that reaches the
+        # gate, so we expect at least one pass row to exercise the summary path.
+        assert len(pass_rows) >= 1, "Expected ≥1 v2 PASS row to exercise summary path"
+
+        # Assertion 1: every PASS row has the stub summary in processing_results
+        for r in pass_rows:
+            assert r["summary"] == "STUB SUMMARY", (
+                f"PASS row missing summary: {dict(r)}"
+            )
+
+        # Assertion 2: the linked articles row has summary + ai_provider set
+        for r in pass_rows:
+            art = conn.execute(
+                "SELECT summary, ai_provider FROM articles WHERE id = ?",
+                (r["article_id"],),
+            ).fetchone()
+            assert art is not None, f"Article row missing for {r['article_id']}"
+            assert art["summary"] == "STUB SUMMARY", (
+                f"articles.summary not populated for {r['article_id']}: "
+                f"{dict(art)}"
+            )
+            assert art["ai_provider"] == "stub-provider", (
+                f"articles.ai_provider not set for {r['article_id']}: "
+                f"{dict(art)}"
+            )
+
+        # Assertion 3: non-PASS rows must NOT have a summary in processing_results
+        for r in non_pass_rows:
+            assert r["summary"] is None, (
+                f"Non-PASS row should not have summary: {dict(r)}"
+            )
+
+        # Assertion 4 (Important #1): non-PASS rows must NOT have a summary
+        # in articles either — spec requires NULL in both tables.
+        for r in non_pass_rows:
+            art = conn.execute(
+                "SELECT summary FROM articles WHERE id = ?",
+                (r["article_id"],),
+            ).fetchone()
+            assert art is not None, (
+                f"Article row missing for non-PASS row {dict(r)}"
+            )
+            assert art["summary"] is None, (
+                f"articles.summary should be NULL for non-PASS row {dict(r)}: "
+                f"got {dict(art)}"
+            )
+
+    finally:
+        conn.close()
+
+    # Assertion 5: generate_summary called exactly once per PASS row
+    assert stub_ai.generate_summary.await_count == len(pass_rows), (
+        f"generate_summary called {stub_ai.generate_summary.await_count} "
+        f"times; expected {len(pass_rows)} (one per PASS row)"
     )

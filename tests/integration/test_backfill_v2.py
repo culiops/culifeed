@@ -58,6 +58,11 @@ def _make_stub_ai_manager():
 
     mgr = MagicMock()
     mgr.complete = AsyncMock(return_value=pass_response)
+    # generate_summary is reached only if a stubbed article ever clears the
+    # embedding similarity threshold and the gate then passes; the random
+    # SHA-derived vectors usually fall below it, so this stub is defensive
+    # against threshold/config drift.
+    mgr.generate_summary = AsyncMock(return_value=None)
     return mgr
 
 
